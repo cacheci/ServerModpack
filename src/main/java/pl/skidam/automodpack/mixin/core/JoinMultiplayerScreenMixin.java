@@ -34,7 +34,12 @@ import com.llamalad7.mixinextras.sugar.Local;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.ObjectSelectionList;
+/*? if >=1.21 && <1.21.4 {*/
+import net.minecraft.client.gui.layouts.EqualSpacingLayout;
+/*?} else {*/
+/*
 import net.minecraft.client.gui.layouts.LinearLayout;
+*//*?}*/
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 import net.minecraft.client.gui.screens.multiplayer.ServerSelectionList;
@@ -63,7 +68,12 @@ public abstract class JoinMultiplayerScreenMixin extends Screen {
 	protected ServerSelectionList serverSelectionList;
 
 	@Unique
+	/*? if >=1.21 && <1.21.4 {*/
+	private EqualSpacingLayout automodpack$topRow;
+	/*?} else {*/
+	/*
 	private LinearLayout automodpack$topRow;
+	*//*?}*/
 	/*? if >=26.2 {*/
 	@Unique
 	private final List<AbstractWidget> automodpack$vanillaRowButtons = new ArrayList<>();
@@ -77,10 +87,18 @@ public abstract class JoinMultiplayerScreenMixin extends Screen {
 		super(title);
 	}
 
+	/*? if >=1.21 && <1.21.4 {*/
+	// 1.21/1.21.1 builds the footer from one outer LinearLayout and two EqualSpacingLayout rows.
+	// Capture the first row immediately before the outer layout is arranged.
+	@Inject(method = "init", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/layouts/LinearLayout;arrangeElements()V"), require = 0)
+	private void automodpack$captureRow(CallbackInfo ci, @Local(ordinal = 0) EqualSpacingLayout topFooterButtons) {
+	/*?} else {*/
+	/*
 	// Captured before the layout is walked into widgets. ordinal = 1 is the top footer row (0 is the
 	// outer vertical footer, 2 the bottom row).
-	@Inject(method = "init", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/layouts/HeaderAndFooterLayout;visitWidgets(Ljava/util/function/Consumer;)V"))
+	@Inject(method = "init", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/gui/layouts/HeaderAndFooterLayout;visitWidgets(Ljava/util/function/Consumer;)V"), require = 0)
 	private void automodpack$captureRow(CallbackInfo ci, @Local(ordinal = 1) LinearLayout topFooterButtons) {
+	*//*?}*/
 		automodpack$topRow = topFooterButtons;
 
 		automodpack$groupsButton = Button.builder(VersionedText.translatable("automodpack.selection.button"), press -> {
