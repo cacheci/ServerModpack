@@ -60,6 +60,11 @@ public class HandshakeC2SPacket {
 			LOGGER.warn("Versions mismatch. Server: {}: Client: {}", serverAMVersion, AM_VERSION);
 		}
 
+		if (SelfUpdater.usesServerOnlyDownloads()) {
+			LOGGER.warn("Automatic AutoModpack version sync is unavailable in the server-only build. Install version {} manually.", serverAMVersion);
+			return;
+		}
+
 		LOGGER.info("Syncing AutoModpack to server version: {}", serverAMVersion);
 
 		ModrinthAPI automodpack = ModrinthAPI.getModSpecificVersion(SelfUpdater.AUTOMODPACK_ID, serverAMVersion, MC_VERSION);

@@ -24,19 +24,18 @@ Optional PROXY protocol metadata may precede dedicated `MAGIC_PACKET` and `DIREC
 
 `disableInternalTLS` changes only where the required TLS session is terminated. Clients still start TLS; when internal termination is disabled, a compatible external component must decrypt the connection before forwarding AutoModpack protocol traffic.
 
-### Direct Downloads
+### Server-only downloads
 
-AutoModpack uses direct download links from Modrinth and CurseForge APIs to download most of your modpack files.
-This means that the mod authors get credit for every download.
-
-However, if file you are providing in the modpack is not available on Modrinth or CurseForge, AutoModpack will download it (also directly) but from your server.
+This build downloads every modpack file directly from the connected AutoModpack host. It does not query Modrinth or CurseForge APIs and does not use their download CDNs.
+The same rule applies to mods, shader packs, resource packs, configuration files, and every other file in the server manifest.
+AutoModpack self-updates and automatic AutoModpack version synchronization are disabled because those features normally retrieve the replacement JAR from Modrinth.
 
 ### Compression
 
 To speed up downloads, AutoModpack uses pure-Java [Zstandard](https://facebook.github.io/zstd/) compression by default.
 The transfer protocol also defines None, Gzip, Snappy, LZ4, and LZO codecs; peers select one codec for the connection before file frames begin.
 Zstandard offers the best general compression ratio and performance for modpack transfers without shipping or extracting native binaries.
-Compression applies only to files downloaded from your server.
+Compression applies to files downloaded from your server.
 
 ### Authorization
 

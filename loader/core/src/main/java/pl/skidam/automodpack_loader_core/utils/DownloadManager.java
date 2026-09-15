@@ -3,7 +3,6 @@ package pl.skidam.automodpack_loader_core.utils;
 import static pl.skidam.automodpack_core.Constants.*;
 
 import java.io.*;
-import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,7 +35,6 @@ public class DownloadManager {
 	private final ExecutorService downloadExecutor = Executors.newFixedThreadPool(MAX_DOWNLOADS_IN_PROGRESS,
 			new CustomThreadFactoryBuilder().setNameFormat("AutoModpackDownload-%d").build());
 
-	private final HttpFileDownloader httpDownloader = new HttpFileDownloader();
 	private DownloadClient downloadClient = null;
 
 	private volatile boolean cancelled = false;
@@ -217,22 +215,7 @@ public class DownloadManager {
 	}
 
 	private String predictSource(QueuedDownload task) {
-		int numberOfIndexes = task.sources.size();
-		int sourceIndex = Math.min(task.attempts / MAX_DOWNLOAD_ATTEMPTS, numberOfIndexes);
-		if (task.sources.size() > sourceIndex) return getDomainFromUrl(task.sources.get(sourceIndex).url());
-		return "internal_client";
-	}
-
-	private String getDomainFromUrl(String url) {
-		if (url == null) return "unknown";
-		try {
-			int protocolEnd = url.indexOf("://");
-			String noProtocol = (protocolEnd > -1) ? url.substring(protocolEnd + 3) : url;
-			int slash = noProtocol.indexOf('/');
-			return (slash > -1) ? noProtocol.substring(0, slash) : noProtocol;
-		} catch (Exception e) {
-			return "unknown";
-		}
+		return "automodpack_host";
 	}
 
 	private void processDownloadTask(FileInspection.HashPathPair hashPathPair, QueuedDownload task) {
@@ -265,9 +248,6 @@ public class DownloadManager {
 	}
 
 	private boolean attemptDownload(FileInspection.HashPathPair hashPathPair, QueuedDownload task, Path storeFile) throws InterruptedException {
-		int numberOfIndexes = task.sources.size();
-		int sourceIndex = Math.min(task.attempts / MAX_DOWNLOAD_ATTEMPTS, numberOfIndexes);
-		DownloadSource source = (task.sources.size() > sourceIndex) ? task.sources.get(sourceIndex) : null;
 		Path tempStoreFile = null;
 
 		try {
@@ -282,28 +262,20 @@ public class DownloadManager {
 			}
 
 			try {
-				if (source != null && task.attempts < MAX_DOWNLOAD_ATTEMPTS * numberOfIndexes) {
-					httpDownloader.download(source, tempStoreFile, this::updateNetworkProgress);
-				} else if (downloadClient != null) {
+				if (downloadClient != null) {
 					hostDownloadFile(hashPathPair, tempStoreFile, this::updateNetworkProgress);
 				} else {
 					task.lastFailureCategory = FailureCategory.REMOTE_SOURCE;
+					LOGGER.warn("No AutoModpack host transfer session is available for CAS object {}", hashPathPair.hash());
 					return false;
 				}
 			} catch (LocalStorageException e) {
 				task.lastFailureCategory = FailureCategory.LOCAL_STORAGE;
 				LOGGER.warn("Failed to write temporary CAS object {}", hashPathPair.hash(), e);
 				return false;
-			} catch (HttpFileDownloader.HttpStatusException e) {
-				task.lastFailureCategory = FailureCategory.REMOTE_SOURCE;
-				if (source != null && source.provider() == DownloadSource.Provider.CURSEFORGE && e.statusCode() == HttpURLConnection.HTTP_UNAUTHORIZED) {
-					LOGGER.warn("CurseForge rejected the download API key with HTTP 401; trying the next source");
-					task.attempts = (sourceIndex + 1) * MAX_DOWNLOAD_ATTEMPTS - 1;
-				}
-				return false;
 			} catch (IOException e) {
 				task.lastFailureCategory = FailureCategory.REMOTE_SOURCE;
-				LOGGER.warn("Remote source failed for CAS object {}", hashPathPair.hash(), e);
+				LOGGER.warn("AutoModpack host failed to provide CAS object {}", hashPathPair.hash(), e);
 				return false;
 			}
 
@@ -360,7 +332,7 @@ public class DownloadManager {
 			acquisitionResults.put(key, new AcquisitionResult(false, FailureCategory.CANCELLED));
 			return;
 		}
-		if (task.lastFailureCategory != FailureCategory.LOCAL_STORAGE && task.attempts < (task.sources.size() + 1) * MAX_DOWNLOAD_ATTEMPTS) {
+		if (task.lastFailureCategory != FailureCategory.LOCAL_STORAGE && task.attempts < MAX_DOWNLOAD_ATTEMPTS) {
 			LOGGER.warn("Retrying download: {}", task.file.getFileName());
 			task.attempts++;
 			queuedDownloads.put(key, task);

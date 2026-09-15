@@ -21,8 +21,6 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.jetbrains.annotations.Nullable;
-
 import pl.skidam.automodpack_core.auth.Secrets;
 import pl.skidam.automodpack_core.config.Jsons;
 import pl.skidam.automodpack_core.modpack.ClientSelectionManager;
@@ -33,8 +31,6 @@ import pl.skidam.automodpack_core.update.UpdatePlan;
 import pl.skidam.automodpack_core.update.UpdatePlanner;
 import pl.skidam.automodpack_core.update.UpdateTransaction;
 import pl.skidam.automodpack_core.update.UpdateTransactionExecutor;
-import pl.skidam.automodpack_core.utils.DownloadSource;
-import pl.skidam.automodpack_core.utils.FetchManager;
 import pl.skidam.automodpack_core.utils.FileInspection;
 import pl.skidam.automodpack_core.utils.HashUtils;
 import pl.skidam.automodpack_core.utils.LegacyClientCacheUtils;
@@ -291,33 +287,14 @@ public class ModpackUpdater implements AutoCloseable {
 			ModpackUtils.populateStoreFromCWD(filesToUpdate, cache);
 			var finalFilesToUpdate = ModpackUtils.identifyUncachedFiles(filesToUpdate);
 
-			// FETCH
-			long startFetching = System.currentTimeMillis();
-			List<FetchManager.FetchData> fetchDatas = new ArrayList<>();
-
+			long startDownloading = System.currentTimeMillis();
 			for (Jsons.ModpackContentFields.ModpackContentItem serverItem : finalFilesToUpdate) {
-
 				totalBytesToDownload += Long.parseLong(serverItem.size);
-				String fileType = serverItem.type;
-
-				// Check if the file is mod, shaderpack or resourcepack is available to download from modrinth or curseforge
-				if (fileType.equals("mod") || fileType.equals("shader") || fileType.equals("resourcepack")) {
-					fetchDatas.add(new FetchManager.FetchData(serverItem.file, serverItem.sha1, serverItem.murmur, serverItem.size, fileType));
-				}
-			}
-
-			FetchManager fetchManager = null;
-
-			if (!fetchDatas.isEmpty()) {
-				fetchManager = new FetchManager(fetchDatas);
-				new ScreenManager().fetch(fetchManager);
-				fetchManager.fetch();
-				LOGGER.info("Finished fetching urls in {}ms", System.currentTimeMillis() - startFetching);
 			}
 
 			// DOWNLOAD
 			try {
-				if (!downloadModpack(finalFilesToUpdate, startFetching, fetchManager, cache)) {
+				if (!downloadModpack(finalFilesToUpdate, startDownloading, cache)) {
 					reportFailedDownloads(start);
 					return;
 				}
@@ -354,8 +331,8 @@ public class ModpackUpdater implements AutoCloseable {
 		}
 	}
 
-	private boolean downloadModpack(Set<Jsons.ModpackContentFields.ModpackContentItem> finalFilesToUpdate, long startFetching, @Nullable FetchManager fetchManager,
-			FileMetadataCache cache) throws InterruptedException {
+	private boolean downloadModpack(Set<Jsons.ModpackContentFields.ModpackContentItem> finalFilesToUpdate, long startDownloading, FileMetadataCache cache)
+			throws InterruptedException {
 		int wholeQueue = finalFilesToUpdate.size();
 
 		if (wholeQueue == 0) {
@@ -379,31 +356,19 @@ public class ModpackUpdater implements AutoCloseable {
 
 			Path downloadFile = SmartFileUtils.getPath(modpackDir, serverFilePath);
 
-			List<DownloadSource> sources = new ArrayList<>();
-			if (fetchManager != null && fetchManager.getFetchDatas().containsKey(serverFileHash)) {
-				sources.addAll(fetchManager.getFetchDatas().get(serverFileHash).fetchedData().sources());
-			}
-
 			Consumer<DownloadManager.FailureCategory> failureCallback = category -> {
-				failedDownloads.put(serverItem, sources.stream().map(DownloadSource::url).toList());
+				failedDownloads.put(serverItem, List.of());
 				failedDownloadCategories.put(serverItem, category);
 			};
 
-			Runnable successCallback = () -> {
-				List<String> mainPageUrls = new LinkedList<>();
-				if (fetchManager != null && fetchManager.getFetchDatas().get(serverFileHash) != null) {
-					mainPageUrls = fetchManager.getFetchDatas().get(serverFileHash).fetchedData().mainPageUrls();
-				}
+			Runnable successCallback = () -> changelogs.changesAddedList.put(downloadFile.getFileName().toString(), List.of());
 
-				changelogs.changesAddedList.put(downloadFile.getFileName().toString(), mainPageUrls);
-			};
-
-			downloadManager.download(downloadFile, serverFileHash, sources, serverFileSize, successCallback, failureCallback);
+			downloadManager.download(downloadFile, serverFileHash, List.of(), serverFileSize, successCallback, failureCallback);
 		}
 
 		downloadManager.joinAll();
 
-		LOGGER.info("Finished downloading files in {}ms", System.currentTimeMillis() - startFetching);
+		LOGGER.info("Finished downloading files from the AutoModpack host in {}ms", System.currentTimeMillis() - startDownloading);
 
 		if (downloadManager.isCancelled()) {
 			LOGGER.warn("Download canceled");
@@ -447,17 +412,8 @@ public class ModpackUpdater implements AutoCloseable {
 		Set<Jsons.ModpackContentFields.ModpackContentItem> refreshedFilesToAcquire = ModpackUtils.identifyUncachedFiles(refreshedContent.list);
 		if (refreshedFilesToAcquire.isEmpty()) return true;
 
-		List<FetchManager.FetchData> refreshedFetchData = new ArrayList<>();
 		for (var item : refreshedFilesToAcquire) {
 			totalBytesToDownload += Long.parseLong(item.size);
-			if (item.type.equals("mod") || item.type.equals("shader") || item.type.equals("resourcepack"))
-				refreshedFetchData.add(new FetchManager.FetchData(item.file, item.sha1, item.murmur, item.size, item.type));
-		}
-		FetchManager refreshedFetchManager = null;
-		if (!refreshedFetchData.isEmpty()) {
-			refreshedFetchManager = new FetchManager(refreshedFetchData);
-			new ScreenManager().fetch(refreshedFetchManager);
-			refreshedFetchManager.fetch();
 		}
 
 		downloadManager = new DownloadManager(totalBytesToDownload);
@@ -466,15 +422,12 @@ public class ModpackUpdater implements AutoCloseable {
 
 		for (var serverItem : refreshedFilesToAcquire) {
 			Path downloadFile = SmartFileUtils.getPath(modpackDir, serverItem.file);
-			List<DownloadSource> sources = refreshedFetchManager != null && refreshedFetchManager.getFetchDatas().containsKey(serverItem.sha1)
-					? refreshedFetchManager.getFetchDatas().get(serverItem.sha1).fetchedData().sources()
-					: List.of();
 			Consumer<DownloadManager.FailureCategory> failureCallback = category -> {
-				failedDownloads.put(serverItem, sources.stream().map(DownloadSource::url).toList());
+				failedDownloads.put(serverItem, List.of());
 				failedDownloadCategories.put(serverItem, category);
 			};
-			Runnable successCallback = () -> changelogs.changesAddedList.put(downloadFile.getFileName().toString(), null);
-			downloadManager.download(downloadFile, serverItem.sha1, sources, Long.parseLong(serverItem.size), successCallback, failureCallback);
+			Runnable successCallback = () -> changelogs.changesAddedList.put(downloadFile.getFileName().toString(), List.of());
+			downloadManager.download(downloadFile, serverItem.sha1, List.of(), Long.parseLong(serverItem.size), successCallback, failureCallback);
 		}
 		downloadManager.joinAll();
 		if (downloadManager.isCancelled()) {
@@ -482,7 +435,7 @@ public class ModpackUpdater implements AutoCloseable {
 			return false;
 		}
 		downloadManager.cancelAllAndShutdown();
-		LOGGER.info("Finished full refreshed acquisition in {}ms", System.currentTimeMillis() - startFetching);
+		LOGGER.info("Finished full refreshed acquisition from the AutoModpack host in {}ms", System.currentTimeMillis() - startDownloading);
 		return failedDownloads.isEmpty();
 	}
 

@@ -23,6 +23,7 @@ import pl.skidam.automodpack_loader_core.utils.UpdateType;
 public class SelfUpdater {
 
 	public static final String AUTOMODPACK_ID = "k68glP2e"; // AutoModpack modrinth id
+	private static final boolean SERVER_ONLY_DOWNLOADS = true;
 
 	// Hardcoded floor: 4.0.0 Stable.
 	// Logic: 4.0.0-beta1 < 4.0.0 Stable. This prevents downgrading to unsafe betas.
@@ -32,7 +33,22 @@ public class SelfUpdater {
 		return update(null);
 	}
 
+	public static boolean usesServerOnlyDownloads() {
+		return SERVER_ONLY_DOWNLOADS;
+	}
+
 	public static boolean update(Jsons.ModpackContentFields serverModpackContent) {
+		if (SERVER_ONLY_DOWNLOADS) {
+			if (serverModpackContent != null && serverModpackContent.automodpackVersion != null
+					&& !serverModpackContent.automodpackVersion.isBlank() && !serverModpackContent.automodpackVersion.equals(AM_VERSION)) {
+				LOGGER.warn("AutoModpack version mismatch. Server: {}, client: {}. This server-only build never contacts third-party update services; install the matching version manually.",
+						serverModpackContent.automodpackVersion, AM_VERSION);
+			} else {
+				LOGGER.info("AutoModpack self-update check skipped by the server-only download policy.");
+			}
+			return false;
+		}
+
 		if (LOADER_MANAGER.isDevelopmentEnvironment()) return false;
 
 		if (LOADER_MANAGER.getEnvironmentType() == LoaderManagerService.EnvironmentType.SERVER && !serverConfig.selfUpdater) {
@@ -159,6 +175,11 @@ public class SelfUpdater {
 	}
 
 	public static void installModVersion(ModrinthAPI automodpack) {
+		if (SERVER_ONLY_DOWNLOADS) {
+			LOGGER.warn("Ignoring third-party AutoModpack update installation because this build only downloads files from the connected AutoModpack host.");
+			return;
+		}
+
 		try {
 			Path currentJar = THIS_MOD_JAR.toAbsolutePath().normalize();
 			Path modsDirectory = MODS_DIR.toAbsolutePath().normalize();

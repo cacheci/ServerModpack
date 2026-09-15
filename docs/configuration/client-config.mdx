@@ -10,8 +10,8 @@ Installed files are stored under `/automodpack/modpacks/<modpackId>/`. The stabl
 | `selectedModpackId`              |                  | The stable seven-character ID of the selected modpack. AutoModpack manages this value.                                            |
 | `modpackConnections`             |                  | Known modpack connections keyed by stable IDs, with their Minecraft origins and download endpoints.                               |
 | `updateSelectedModpackOnLaunch`  | `true`           | Turn on/off automatic modpack updates when launching the game.                                                                     |
-| `selfUpdater`                    | `false`          | Turn on/off automodpack self-updates. This does not affect the mod's activity in installing modpacks.                              |
-| `syncAutoModpackVersion`         | `true`           | Turn on/off automatic syncing of AutoModpack version with the server.                                                              |
+| `selfUpdater`                    | `false`          | Retained for configuration compatibility; self-updates are disabled in this server-only build.                                    |
+| `syncAutoModpackVersion`         | `true`           | Retained for configuration compatibility; third-party JAR synchronization is disabled in this server-only build.                  |
 | `syncLoaderVersion`              | `false`          | Turn on/off automatic syncing of the modloader version with the server. (EXPERIMENTAL - it works only on prism launcher and forks) |
 | `playMusic`                      | `true`           | Turn on/off elevator music while downloading modpack in game.                                                                      |
 | `allowRemoteNonModpackDeletions` | `true`           | Allow remote server to delete non-modpack files from your client.                                                                  |

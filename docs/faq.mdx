@@ -28,7 +28,7 @@ Usually not. On supported targets, the default `HOLEPUNCH` mode uses the Minecra
 An explicit `bindPort` starts a dedicated listener for `MAGIC_PACKET` or `DIRECT`. Configure `advertisedEndpointHost` and `advertisedEndpointPort` for the public route clients should use. See the complete matrix in [config](configuration/server-config).
 
 ### What happens when I update AutoModpack version on server?
-Client always try to sync to the server's version of AutoModpack. It updates or downgrades itself to the server's version if such is found on the Modrinth.
+This server-only build does not contact Modrinth to synchronize its own JAR. Install the matching AutoModpack version on clients and the server manually.
 
 ### Why is the host modpack path so long?
 There are plans to implement ability of adding more than just one, `main` modpack.
