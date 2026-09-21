@@ -27,18 +27,17 @@ class ClientSelectionManagerTest {
 	}
 
 	@Test
-	void defaultsToRequiredAndRecommended() {
+	void defaultsToRecommendedOnly() {
 		var map = groups("core", group(true, false), "perf", group(false, true), "shaders", group(false, false));
 
-		assertEquals(Set.of("core", "perf"), ClientSelectionManager.defaultSelection(map));
+		assertEquals(Set.of("perf"), ClientSelectionManager.defaultSelection(map));
 	}
 
 	@Test
-	void requiredGroupsCannotBeDeselected() {
+	void requiredGroupsCanBeDeselected() {
 		var map = groups("core", group(true, false), "shaders", group(false, false));
 
-		// The player unticked everything; required content must survive it.
-		assertEquals(Set.of("core"), ClientSelectionManager.resolve(map, Set.of()));
+		assertEquals(Set.of(), ClientSelectionManager.resolve(map, Set.of()));
 	}
 
 	@Test
@@ -59,7 +58,7 @@ class ClientSelectionManagerTest {
 		orphan.requires = Set.of("does-not-exist");
 		var map = groups("core", group(true, false), "orphan", orphan);
 
-		assertEquals(Set.of("core"), ClientSelectionManager.resolve(map, Set.of("orphan")));
+		assertEquals(Set.of("core"), ClientSelectionManager.resolve(map, Set.of("core", "orphan")));
 	}
 
 	@Test
@@ -85,27 +84,22 @@ class ClientSelectionManagerTest {
 	}
 
 	@Test
-	void requiredGroupWinsConflictAgainstOptional() {
+	void legacyRequiredFlagDoesNotWinConflict() {
 		var optional = group(false, false);
 		optional.breaksWith = Set.of("core");
 		var map = groups("optional", optional, "core", group(true, false));
 
-		assertEquals(Set.of("core"), ClientSelectionManager.resolve(map, Set.of("optional")));
+		assertEquals(Set.of("optional"), ClientSelectionManager.resolve(map, Set.of("optional", "core")));
 	}
 
 	@Test
-	void requiredGroupsDependencyWinsConflictOverEarlierOptional() {
+	void selectedGroupsStillPullInDependencies() {
 		var renderApi = group(false, false);
-		var legacyRenderer = group(false, false);
-		legacyRenderer.breaksWith = Set.of("renderApi");
 		var core = group(true, false);
 		core.requires = Set.of("renderApi");
-		// legacyRenderer is declared (and chosen) before renderApi, so without dependency-aware
-		// priority it would win the conflict on declaration order and get dropped, leaving
-		// required "core" with an unsatisfied dependency.
-		var map = groups("legacyRenderer", legacyRenderer, "renderApi", renderApi, "core", core);
+		var map = groups("renderApi", renderApi, "core", core);
 
-		assertEquals(Set.of("core", "renderApi"), ClientSelectionManager.resolve(map, Set.of("legacyRenderer")));
+		assertEquals(Set.of("core", "renderApi"), ClientSelectionManager.resolve(map, Set.of("core")));
 	}
 
 	@Test
@@ -114,10 +108,10 @@ class ClientSelectionManagerTest {
 		shaders.breaksWith = Set.of("core");
 		var shaderPacks = group(false, false);
 		shaderPacks.requires = Set.of("shaders");
-		var map = groups("core", group(true, false), "shaders", shaders, "shaderPacks", shaderPacks);
+		var map = groups("core", group(false, false), "shaders", shaders, "shaderPacks", shaderPacks);
 
-		// shaders loses to required core, so shaderPacks can no longer stand alone.
-		assertEquals(Set.of("core"), ClientSelectionManager.resolve(map, Set.of("shaders", "shaderPacks")));
+		// shaders loses to the earlier core group, so shaderPacks can no longer stand alone.
+		assertEquals(Set.of("core"), ClientSelectionManager.resolve(map, Set.of("core", "shaders", "shaderPacks")));
 	}
 
 	@Test
@@ -149,19 +143,59 @@ class ClientSelectionManagerTest {
 	}
 
 	@Test
+	void selectsIndividualModsButKeepsNonModFilesFromTheGroup() {
+		var content = new Jsons.ModpackContentFields();
+		content.groups = groups("main", group(true, true, "/mods/a.jar", "/mods/b.jar", "/config/main.json"));
+		content.list = Set.of(item("/mods/a.jar"), item("/mods/b.jar"), item("/config/main.json", "config"));
+
+		Set<String> selected = ClientSelectionManager.selectedFiles(content, Set.of("main"), Map.of("main", Set.of("/mods/b.jar")));
+
+		assertEquals(Set.of("/mods/b.jar", "/config/main.json"), selected);
+	}
+
+	@Test
+	void explicitEmptyModSelectionKeepsOnlyNonModFilesFromTheGroup() {
+		var content = new Jsons.ModpackContentFields();
+		content.groups = groups("main", group(true, true, "/mods/a.jar", "/config/main.json"));
+		content.list = Set.of(item("/mods/a.jar"), item("/config/main.json", "config"));
+
+		Set<String> selected = ClientSelectionManager.selectedFiles(content, Set.of("main"), Map.of("main", Set.of()));
+
+		assertEquals(Set.of("/config/main.json"), selected);
+	}
+
+	@Test
+	void legacyGroupOnlySelectionStillIncludesEveryMod() {
+		var content = new Jsons.ModpackContentFields();
+		content.groups = groups("main", group(true, true, "/mods/a.jar", "/mods/b.jar"));
+		content.list = Set.of(item("/mods/a.jar"), item("/mods/b.jar"));
+
+		assertEquals(Set.of("/mods/a.jar", "/mods/b.jar"), ClientSelectionManager.selectedFiles(content, Set.of("main"), null));
+	}
+
+	@Test
+	void listsOnlyModFilesUnderEachGroupInStableOrder() {
+		var content = new Jsons.ModpackContentFields();
+		content.groups = groups("main", group(true, true, "/mods/z.jar", "/config/main.json", "/mods/a.jar"));
+		content.list = Set.of(item("/mods/z.jar"), item("/mods/a.jar"), item("/config/main.json", "config"));
+
+		assertEquals(List.of("/mods/a.jar", "/mods/z.jar"), new ArrayList<>(ClientSelectionManager.modFilesByGroup(content).get("main")));
+	}
+
+	@Test
 	void filterToSelectionDropsUnselectedFilesButKeepsMetadata() {
-		// No saved selection on disk in the test env, so this falls back to required + recommended.
+		// No saved selection on disk in the test env, so this falls back to recommended groups.
 		var content = new Jsons.ModpackContentFields();
 		content.modpackId = "abc123";
 		content.modpackName = "My Server";
 		content.mcVersion = "26.2";
 		content.loader = "fabric";
-		content.groups = groups("main", group(true, false, "/mods/core.jar"), "extras", group(false, false, "/mods/extra.jar"));
+		content.groups = groups("main", group(true, true, "/mods/core.jar"), "extras", group(false, false, "/mods/extra.jar"));
 		content.list = Set.of(item("/mods/core.jar"), item("/mods/extra.jar"));
 
 		var filtered = ClientSelectionManager.filterToSelection(content);
 
-		// The optional, non-recommended group is dropped; the required group stays.
+		// The non-recommended group is dropped; the recommended group stays.
 		assertEquals(Set.of("/mods/core.jar"), filtered.list.stream().map(fileItem -> fileItem.file).collect(java.util.stream.Collectors.toSet()));
 		// Identity fields the update check and download screen rely on must survive filtering.
 		assertEquals("abc123", filtered.modpackId);
@@ -180,6 +214,10 @@ class ClientSelectionManagerTest {
 	}
 
 	private static Jsons.ModpackContentFields.ModpackContentItem item(String file) {
-		return new Jsons.ModpackContentFields.ModpackContentItem(file, "1", "mod", false, false, false, "sha", null);
+		return item(file, "mod");
+	}
+
+	private static Jsons.ModpackContentFields.ModpackContentItem item(String file, String type) {
+		return new Jsons.ModpackContentFields.ModpackContentItem(file, "1", type, false, false, false, "sha", null);
 	}
 }

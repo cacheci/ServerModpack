@@ -115,7 +115,7 @@ public class ScreenImpl implements ScreenService {
 		}
 
 		public static void danger(Object modpackUpdaterInstance) {
-			Screens.setScreen(new DangerScreen((ModpackUpdater) modpackUpdaterInstance));
+			Screens.setScreen(new DangerScreen(getScreen(), (ModpackUpdater) modpackUpdaterInstance));
 		}
 
 		public static void error(String... errors) {

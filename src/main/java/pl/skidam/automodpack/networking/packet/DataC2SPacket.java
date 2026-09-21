@@ -3,6 +3,7 @@ package pl.skidam.automodpack.networking.packet;
 import static pl.skidam.automodpack_core.Constants.*;
 
 import java.net.InetSocketAddress;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 
@@ -45,17 +46,10 @@ public class DataC2SPacket {
 		String packetEndpointHost = dataPacket.endpointHost == null ? "" : dataPacket.endpointHost;
 		int packetEndpointPort = dataPacket.endpointPort;
 		Secrets.Secret secret = dataPacket.secret;
-		boolean modRequired = dataPacket.modRequired;
 		ModpackConnectionMode connectionMode = dataPacket.connectionMode;
 		if (connectionMode == null) {
 			LOGGER.error("Server did not provide an AutoModpack connection mode");
 			return CompletableFuture.completedFuture(buildResponse(null));
-		}
-
-		if (modRequired) {
-			// TODO set screen to refreshed danger screen which will ask user to install modpack with two options
-			// 1. Disconnect and install modpack
-			// 2. Dont disconnect and join server
 		}
 
 		ModPackets.ConnectionAttempt connectionAttempt = ModPackets.getConnectionAttempt();
@@ -97,13 +91,15 @@ public class DataC2SPacket {
 			return CompletableFuture.completedFuture(buildResponse(null));
 		}
 
-		return ModpackUtils.requestServerModpackContentAsync(connectionInfo, secret, true).thenApplyAsync(manifestResult -> {
-			if (manifestResult.state() == ModpackUtils.ManifestFetchState.OPERATION_FAILED) return buildResponse(true);
-			if (!manifestResult.successful()) return buildResponse(null);
+		return ModpackUtils.requestServerModpackContentAsync(connectionInfo, secret, true).thenComposeAsync(manifestResult -> {
+			if (manifestResult.state() == ModpackUtils.ManifestFetchState.OPERATION_FAILED)
+				return CompletableFuture.completedFuture(buildResponse(true));
+			if (!manifestResult.successful()) return CompletableFuture.completedFuture(buildResponse(null));
 
-			// Narrow the server manifest to the player's selected groups before any update check,
-			// otherwise unselected files read as missing and force an endless "please restart" loop.
-			Jsons.ModpackContentFields serverModpackContent = ClientSelectionManager.filterToSelection(manifestResult.content());
+			// Keep the complete manifest for first-install group selection, but perform update checks
+			// against the currently selected groups so unselected files never look missing.
+			Jsons.ModpackContentFields rawServerModpackContent = manifestResult.content();
+			Jsons.ModpackContentFields serverModpackContent = ClientSelectionManager.filterToSelection(rawServerModpackContent);
 			DownloadClient downloadClient = manifestResult.client();
 			Path modpackDir = ModpackUtils.getModpackPath(serverModpackContent.modpackId);
 			try {
@@ -113,39 +109,51 @@ public class DataC2SPacket {
 				LOGGER.error("Failed to persist client secret", e);
 				new ScreenManager().error("automodpack.error.critical", "Failed to persist client secret", "automodpack.error.logs");
 				disconnectImmediately(handler);
-				return buildResponse(true);
+				return CompletableFuture.completedFuture(buildResponse(true));
 			}
 
-			ModpackUpdater updater = new ModpackUpdater(serverModpackContent, connectionInfo, secret, modpackDir, downloadClient);
+			ModpackUpdater updater = new ModpackUpdater(rawServerModpackContent, connectionInfo, secret, modpackDir, downloadClient);
 			try {
 				ModpackUtils.UpdateCheckResult updateCheckResult = ModpackUtils.isUpdate(serverModpackContent, modpackDir);
 				if (updateCheckResult.requiresUpdate()) {
+					boolean firstInstall = !Files.exists(modpackDir.resolve(hostModpackContentFile.getFileName()));
+					if (firstInstall) {
+						updater.processModpackUpdate(updateCheckResult);
+						return updater.getConfirmationResult().thenApply(state -> {
+							if (state == ModpackUpdater.ConfirmationState.STARTED) {
+								disconnectImmediately(handler);
+								return buildResponse(true);
+							}
+							return buildResponse(false);
+						});
+					}
+
 					new ScreenManager().waiting();
 					disconnectImmediately(handler);
 					updater.processModpackUpdate(updateCheckResult);
-					return buildResponse(true);
+					return CompletableFuture.completedFuture(buildResponse(true));
 				}
 
 				UpdateType restartType = updater.reconcileReceivedManifest();
-				if (restartType == null) return buildResponse(false);
+				if (restartType == null) return CompletableFuture.completedFuture(buildResponse(false));
 
 				new ScreenManager().waiting();
 				disconnectImmediately(handler);
 				new ReLauncher(modpackDir, restartType, null).restart(false);
-				return buildResponse(true);
+				return CompletableFuture.completedFuture(buildResponse(true));
 			} catch (UpdateDeferredException e) {
 				updater.close();
 				LOGGER.warn("Update transaction {} is waiting for the detached helper to release {}", e.getTransactionId(), e.getBlockedPath());
 				new ScreenManager().waiting();
 				disconnectImmediately(handler);
 				new ReLauncher(modpackDir, UpdateType.UPDATE, null).restart(false);
-				return buildResponse(true);
+				return CompletableFuture.completedFuture(buildResponse(true));
 			} catch (Exception e) {
 				updater.close();
 				LOGGER.error("Failed to reconcile stable modpack installation", e);
 				new ScreenManager().error("automodpack.error.critical", String.valueOf(e.getMessage()), "automodpack.error.logs");
 				disconnectImmediately(handler);
-				return buildResponse(true);
+				return CompletableFuture.completedFuture(buildResponse(true));
 			}
 		}, DownloadClient.NET_EXECUTOR).exceptionally(e -> {
 			LOGGER.error("Error while handling data packet", e);

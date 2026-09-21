@@ -36,30 +36,53 @@ public class ModpackSelectionScreen extends VersionedScreen {
 	private final String modpackId;
 	private final String modpackName;
 	private final Map<String, Jsons.ModpackContentFields.ModpackGroupFields> groups;
+	private final Map<String, Set<String>> modFilesByGroup;
+	private final Runnable savedAction;
+	private final Runnable canceledAction;
 
-	// What the player has actually ticked; resolved is what that implies once required groups,
-	// dependencies and conflicts are applied.
+	// What the player has actually ticked; resolved is what that implies once dependencies and
+	// conflicts are applied. The manifest's legacy required flag does not lock a group on.
 	private final Set<String> chosen = new LinkedHashSet<>();
+	private final Map<String, Set<String>> chosenModsByGroup = new LinkedHashMap<>();
 	private Set<String> resolved;
-	private final List<String> rows = new ArrayList<>();
+	private final List<SelectionRow> rows = new ArrayList<>();
 
 	private int page = 0;
 	private int rowsPerPage = 1;
 	private boolean saved = false;
 
-	public ModpackSelectionScreen(Screen parent, String modpackId, String modpackName,
-			Map<String, Jsons.ModpackContentFields.ModpackGroupFields> groups) {
+	public ModpackSelectionScreen(Screen parent, Jsons.ModpackContentFields content) {
+		this(parent, content, null, null);
+	}
+
+	public ModpackSelectionScreen(Screen parent, Jsons.ModpackContentFields content, Runnable savedAction, Runnable canceledAction) {
 		super(VersionedText.translatable("automodpack.selection.title"));
 		this.parent = parent;
-		this.modpackId = modpackId;
-		this.modpackName = modpackName == null ? "" : modpackName;
-		this.groups = groups == null ? Map.of() : groups;
+		this.modpackId = content == null ? "" : content.modpackId;
+		this.modpackName = content == null || content.modpackName == null ? "" : content.modpackName;
+		this.groups = content == null || content.groups == null ? Map.of() : content.groups;
+		this.modFilesByGroup = ClientSelectionManager.modFilesByGroup(content);
+		this.savedAction = savedAction;
+		this.canceledAction = canceledAction;
 
-		Set<String> saved = ClientSelectionManager.getManager().getSelection(modpackId).map(selection -> selection.selectedGroups)
+		var savedSelection = ClientSelectionManager.getManager().getSelection(modpackId);
+		Set<String> saved = savedSelection.map(selection -> selection.selectedGroups)
 				.orElseGet(() -> ClientSelectionManager.defaultSelection(this.groups));
 		this.chosen.addAll(saved);
 		this.resolved = ClientSelectionManager.resolve(this.groups, this.chosen);
-		this.rows.addAll(this.groups.keySet());
+
+		Map<String, Set<String>> savedMods = savedSelection.map(selection -> selection.selectedModsByGroup).orElse(null);
+		if (savedMods != null) {
+			for (var entry : savedMods.entrySet()) {
+				this.chosenModsByGroup.put(entry.getKey(), entry.getValue() == null ? new LinkedHashSet<>() : new LinkedHashSet<>(entry.getValue()));
+			}
+		}
+		ensureModSelectionsForResolvedGroups();
+
+		this.groups.keySet().forEach(groupId -> {
+			this.rows.add(SelectionRow.group(groupId));
+			this.modFilesByGroup.getOrDefault(groupId, Set.of()).forEach(modFile -> this.rows.add(SelectionRow.mod(groupId, modFile)));
+		});
 	}
 
 	/**
@@ -91,7 +114,7 @@ public class ModpackSelectionScreen extends VersionedScreen {
 			return parent;
 		}
 
-		return new ModpackSelectionScreen(parent, modpackId, content.modpackName, content.groups);
+		return new ModpackSelectionScreen(parent, content);
 	}
 
 	public static boolean hasGroupsToConfigure() {
@@ -108,8 +131,8 @@ public class ModpackSelectionScreen extends VersionedScreen {
 
 		Jsons.ModpackContentFields content = ModpackContentTools.read(ModpackUtils.getModpackPath(modpackId).resolve(hostModpackContentFile.getFileName()));
 		if (content == null || content.groups == null) return false;
-		// Nothing worth showing a button for when every group is mandatory.
-		return content.groups.values().stream().anyMatch(group -> group != null && !group.required);
+		// Every group is configurable, including groups carrying the legacy required flag.
+		return content.groups.values().stream().anyMatch(Objects::nonNull);
 	}
 
 	/**
@@ -173,15 +196,16 @@ public class ModpackSelectionScreen extends VersionedScreen {
 		int start = page * rowsPerPage;
 
 		for (int i = start; i < Math.min(rows.size(), start + rowsPerPage); i++) {
-			String groupId = rows.get(i);
+			SelectionRow row = rows.get(i);
+			String groupId = row.groupId;
 			var group = groups.get(groupId);
 			int y = listTop + (i - start) * ROW_HEIGHT;
 
-			Button button = buttonWidget(x, y, ROW_WIDTH, 20, rowLabel(groupId, group), press -> toggle(groupId));
-			// Required groups are shown so the player can see what they are getting, but not togglable.
-			button.active = group != null && !group.required;
-			MutableComponent tooltip = rowTooltip(group);
-			// A disabled button still shows its tooltip, so required groups keep their description on hover.
+			Button button = row.isGroup()
+					? buttonWidget(x, y, ROW_WIDTH, 20, groupRowLabel(groupId, group), press -> toggleGroup(groupId))
+					: buttonWidget(x + 12, y, ROW_WIDTH - 12, 20, modRowLabel(row), press -> toggleMod(row.groupId, row.modFile));
+			button.active = group != null;
+			MutableComponent tooltip = row.isGroup() ? groupRowTooltip(group) : VersionedText.literal(row.modFile).withStyle(ChatFormatting.GRAY);
 			if (tooltip != null) setTooltip(button, tooltip);
 			this.addRenderableWidget(button);
 		}
@@ -205,11 +229,12 @@ public class ModpackSelectionScreen extends VersionedScreen {
 				press -> {
 					chosen.clear();
 					chosen.addAll(ClientSelectionManager.defaultSelection(groups));
+					chosenModsByGroup.clear();
 					reresolve();
 				}));
 
 		this.addRenderableWidget(buttonWidget(this.width / 2 - 50, this.height - 28, 100, 20, VersionedText.translatable("automodpack.selection.cancel"),
-				press -> this.minecraft.gui.setScreen(parent)));
+				press -> cancel()));
 
 		this.addRenderableWidget(buttonWidget(this.width / 2 + 55, this.height - 28, 100, 20,
 				VersionedText.translatable("automodpack.selection.save").withStyle(ChatFormatting.BOLD), press -> save()));
@@ -219,19 +244,42 @@ public class ModpackSelectionScreen extends VersionedScreen {
 	 * Ticking a group that conflicts with an already-selected one wins the conflict, which is what
 	 * a player expects from the click they just made. The resolver still has the final say.
 	 */
-	private void toggle(String groupId) {
+	private void toggleGroup(String groupId) {
 		if (resolved.contains(groupId)) {
 			chosen.remove(groupId);
 		} else {
 			groups.keySet().stream().filter(other -> ClientSelectionManager.conflicts(groups, other, groupId)).forEach(chosen::remove);
 			chosen.add(groupId);
+			chosenModsByGroup.computeIfAbsent(groupId, ignored -> new LinkedHashSet<>(modFilesByGroup.getOrDefault(groupId, Set.of())));
+		}
+		reresolve();
+	}
+
+	private void toggleMod(String groupId, String modFile) {
+		if (!resolved.contains(groupId)) {
+			groups.keySet().stream().filter(other -> ClientSelectionManager.conflicts(groups, other, groupId)).forEach(chosen::remove);
+			chosen.add(groupId);
+			Set<String> selectedMods = new LinkedHashSet<>();
+			selectedMods.add(modFile);
+			chosenModsByGroup.put(groupId, selectedMods);
+		} else {
+			Set<String> selectedMods = chosenModsByGroup.computeIfAbsent(groupId,
+					ignored -> new LinkedHashSet<>(modFilesByGroup.getOrDefault(groupId, Set.of())));
+			if (!selectedMods.remove(modFile)) selectedMods.add(modFile);
 		}
 		reresolve();
 	}
 
 	private void reresolve() {
 		resolved = ClientSelectionManager.resolve(groups, chosen);
+		ensureModSelectionsForResolvedGroups();
 		rebuild();
+	}
+
+	private void ensureModSelectionsForResolvedGroups() {
+		for (String groupId : resolved) {
+			chosenModsByGroup.computeIfAbsent(groupId, ignored -> new LinkedHashSet<>(modFilesByGroup.getOrDefault(groupId, Set.of())));
+		}
 	}
 
 	private void rebuild() {
@@ -244,26 +292,70 @@ public class ModpackSelectionScreen extends VersionedScreen {
 	}
 
 	private void save() {
-		ClientSelectionManager.getManager().saveSelection(modpackId, resolved);
+		Map<String, Set<String>> selectedMods = new LinkedHashMap<>();
+		for (String groupId : resolved) {
+			selectedMods.put(groupId, new LinkedHashSet<>(chosenModsByGroup.getOrDefault(groupId, Set.of())));
+		}
+		ClientSelectionManager.getManager().saveSelection(modpackId, resolved, selectedMods);
+		if (savedAction != null) {
+			savedAction.run();
+			return;
+		}
 		saved = true;
 		rebuild();
 	}
 
+	private void cancel() {
+		if (canceledAction != null) {
+			canceledAction.run();
+			return;
+		}
+		this.minecraft.gui.setScreen(parent);
+	}
+
 	/** The group's description, shown on hover. Null when the server set none, so no tooltip appears. */
-	private MutableComponent rowTooltip(Jsons.ModpackContentFields.ModpackGroupFields group) {
+	private MutableComponent groupRowTooltip(Jsons.ModpackContentFields.ModpackGroupFields group) {
 		if (group == null || group.description == null || group.description.isBlank()) return null;
 		return VersionedText.literal(group.description).withStyle(ChatFormatting.GRAY);
 	}
 
-	private MutableComponent rowLabel(String groupId, Jsons.ModpackContentFields.ModpackGroupFields group) {
+	private MutableComponent groupRowLabel(String groupId, Jsons.ModpackContentFields.ModpackGroupFields group) {
 		if (group == null) return VersionedText.literal(groupId);
 
 		String name = group.displayName == null || group.displayName.isBlank() ? groupId : group.displayName;
 		boolean on = resolved.contains(groupId);
 
-		if (group.required) return VersionedText.literal("[#] " + name + " (required)").withStyle(ChatFormatting.GRAY);
 		if (on) return VersionedText.literal("[x] " + name).withStyle(ChatFormatting.GREEN);
 		return VersionedText.literal("[ ] " + name).withStyle(ChatFormatting.GRAY);
+	}
+
+	private MutableComponent modRowLabel(SelectionRow row) {
+		String fileName = Path.of(row.modFile).getFileName().toString();
+		boolean on = resolved.contains(row.groupId) && chosenModsByGroup.getOrDefault(row.groupId, Set.of()).contains(row.modFile);
+		if (on) return VersionedText.literal("  [x] " + fileName).withStyle(ChatFormatting.GREEN);
+		return VersionedText.literal("  [ ] " + fileName).withStyle(ChatFormatting.GRAY);
+	}
+
+	private static class SelectionRow {
+		private final String groupId;
+		private final String modFile;
+
+		private SelectionRow(String groupId, String modFile) {
+			this.groupId = groupId;
+			this.modFile = modFile;
+		}
+
+		private static SelectionRow group(String groupId) {
+			return new SelectionRow(groupId, null);
+		}
+
+		private static SelectionRow mod(String groupId, String modFile) {
+			return new SelectionRow(groupId, modFile);
+		}
+
+		private boolean isGroup() {
+			return modFile == null;
+		}
 	}
 
 	@Override

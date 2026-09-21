@@ -378,11 +378,18 @@ public class Jsons {
 
 		public static class ModpackSelection {
 			public Set<String> selectedGroups = new HashSet<>();
+			// Null means a legacy group-only selection: every mod in each selected group is selected.
+			public Map<String, Set<String>> selectedModsByGroup;
 
 			public ModpackSelection() {}
 
 			public ModpackSelection(Set<String> selectedGroups) {
 				this.selectedGroups = selectedGroups;
+			}
+
+			public ModpackSelection(Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup) {
+				this.selectedGroups = selectedGroups;
+				this.selectedModsByGroup = selectedModsByGroup;
 			}
 		}
 	}

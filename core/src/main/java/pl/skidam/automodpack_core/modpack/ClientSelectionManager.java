@@ -15,7 +15,8 @@ import pl.skidam.automodpack_core.config.Jsons;
  * and the "Optional Mods" screen reopens with the previous answer already ticked. The selection is
  * only ever changed by the player through that screen; it is never prompted automatically. This
  * class also turns a raw pick into a consistent set of groups by applying
- * required/requires/breaksWith.
+ * requires/breaksWith. The legacy required flag is retained in manifests for compatibility, but
+ * does not force a client selection.
  * The resolution half is static and free of I/O so it can be exercised without a game or a disk.
  */
 public class ClientSelectionManager {
@@ -46,12 +47,24 @@ public class ClientSelectionManager {
 
 	/** Records the player's pick for a modpack, replacing any previous choice. */
 	public void saveSelection(String modpackId, Set<String> selectedGroups) {
+		saveSelection(modpackId, selectedGroups, null);
+	}
+
+	/** Records both selected groups and the individual mods selected inside them. */
+	public void saveSelection(String modpackId, Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup) {
 		if (modpackId == null || modpackId.isBlank()) {
 			LOGGER.warn("Refusing to save a group selection without a modpack ID.");
 			return;
 		}
 
-		selections.selections.put(modpackId, new Jsons.ClientSelectionManagerFields.ModpackSelection(new HashSet<>(selectedGroups)));
+		Map<String, Set<String>> copiedMods = null;
+		if (selectedModsByGroup != null) {
+			copiedMods = new HashMap<>();
+			for (var entry : selectedModsByGroup.entrySet()) {
+				copiedMods.put(entry.getKey(), entry.getValue() == null ? new HashSet<>() : new HashSet<>(entry.getValue()));
+			}
+		}
+		selections.selections.put(modpackId, new Jsons.ClientSelectionManagerFields.ModpackSelection(new HashSet<>(selectedGroups), copiedMods));
 		save();
 	}
 
@@ -67,20 +80,20 @@ public class ClientSelectionManager {
 	// RESOLUTION (pure)
 	// =================================================================================
 
-	/** Pre-ticked state for a player who has not chosen yet: everything required or recommended. */
+	/** Pre-ticked state for a player who has not chosen yet: everything recommended. */
 	public static Set<String> defaultSelection(Map<String, Jsons.ModpackContentFields.ModpackGroupFields> groups) {
 		if (groups == null) return Set.of();
 		Set<String> chosen = new LinkedHashSet<>();
 		groups.forEach((id, group) -> {
-			if (group != null && (group.required || group.recommended)) chosen.add(id);
+			if (group != null && group.recommended) chosen.add(id);
 		});
 		return resolve(groups, chosen);
 	}
 
 	/**
-	 * Turns a raw pick into a consistent set: forces required ones in, pulls in dependencies, and
-	 * breaks up conflicts. Required groups always win a conflict; otherwise the group declared
-	 * first does.
+	 * Turns a raw pick into a consistent set: pulls in dependencies and breaks up conflicts. All
+	 * groups are optional, including groups whose manifest retains the legacy required flag. When
+	 * selected groups conflict, the group declared first wins.
 	 */
 	public static Set<String> resolve(Map<String, Jsons.ModpackContentFields.ModpackGroupFields> groups, Set<String> chosen) {
 		if (groups == null || groups.isEmpty()) return Set.of();
@@ -92,33 +105,18 @@ public class ClientSelectionManager {
 
 		Set<String> wanted = new LinkedHashSet<>();
 		usable.forEach((id, group) -> {
-			if (group.required || (chosen != null && chosen.contains(id))) wanted.add(id);
+			if (chosen != null && chosen.contains(id)) wanted.add(id);
 		});
 
 		addRequiredDependencies(usable, wanted);
 
-		// Dependencies a required group pulls in must win conflicts exactly like their required
-		// dependent does, otherwise an optional group selected earlier can steal the conflict and
-		// leave the required group's dependency missing (dropUnsatisfied then keeps the required
-		// group anyway, producing an invalid selection).
-		Set<String> mustHave = new LinkedHashSet<>();
-		usable.forEach((id, group) -> {
-			if (group.required) mustHave.add(id);
-		});
-		addRequiredDependencies(usable, mustHave);
-
-		// Required (and their dependencies) first so they can never be the side that loses a conflict.
 		List<String> byPriority = new ArrayList<>();
-		usable.keySet().stream().filter(id -> wanted.contains(id) && mustHave.contains(id)).forEach(byPriority::add);
-		usable.keySet().stream().filter(id -> wanted.contains(id) && !mustHave.contains(id)).forEach(byPriority::add);
+		usable.keySet().stream().filter(wanted::contains).forEach(byPriority::add);
 
 		Set<String> kept = new LinkedHashSet<>();
 		for (String id : byPriority) {
 			String clash = kept.stream().filter(other -> conflicts(usable, other, id)).findFirst().orElse(null);
 			if (clash == null) {
-				kept.add(id);
-			} else if (mustHave.contains(id)) {
-				LOGGER.warn("Group {} is required (directly or as a dependency of a required group) but conflicts with {}; keeping both.", id, clash);
 				kept.add(id);
 			} else {
 				LOGGER.info("Group {} conflicts with {}, leaving it out", id, clash);
@@ -156,10 +154,6 @@ public class ClientSelectionManager {
 				for (String dependency : group.requires) {
 					if (dependency == null || dependency.isBlank()) continue;
 					if (kept.contains(dependency)) continue;
-					if (group.required) {
-						LOGGER.warn("Required group {} depends on {}, which is unavailable.", id, dependency);
-						continue;
-					}
 					kept.remove(id);
 					LOGGER.info("Group {} needs {}, which is not selected; leaving it out", id, dependency);
 					changed = true;
@@ -188,10 +182,11 @@ public class ClientSelectionManager {
 	public static Jsons.ModpackContentFields filterToSelection(Jsons.ModpackContentFields content) {
 		if (content == null || content.groups == null || content.groups.isEmpty() || content.list == null) return content;
 
-		Set<String> chosen = getManager().getSelection(content.modpackId).map(selection -> selection.selectedGroups)
-				.orElseGet(() -> defaultSelection(content.groups));
+		Optional<Jsons.ClientSelectionManagerFields.ModpackSelection> savedSelection = getManager().getSelection(content.modpackId);
+		Set<String> chosen = savedSelection.map(selection -> selection.selectedGroups).orElseGet(() -> defaultSelection(content.groups));
 		Set<String> resolved = resolve(content.groups, chosen);
-		Set<String> allowedFiles = selectedFiles(content, resolved);
+		Map<String, Set<String>> selectedMods = savedSelection.map(selection -> selection.selectedModsByGroup).orElse(null);
+		Set<String> allowedFiles = selectedFiles(content, resolved, selectedMods);
 
 		if (allowedFiles.size() == content.list.size()) return content;
 		LOGGER.info("Group selection covers {} of {} modpack files (groups: {})", allowedFiles.size(), content.list.size(), resolved);
@@ -218,6 +213,17 @@ public class ClientSelectionManager {
 	 * talking to a server that never declared groups still receives the whole modpack.
 	 */
 	public static Set<String> selectedFiles(Jsons.ModpackContentFields content, Set<String> selectedGroups) {
+		return selectedFiles(content, selectedGroups, null);
+	}
+
+	/**
+	 * Relative paths covered by the selected groups, with mod files optionally narrowed to the
+	 * per-group picks. A missing per-group entry means all of that group's mods, which preserves old
+	 * group-only selections and groups pulled in as dependencies. An explicit empty set means no mods
+	 * from that group.
+	 */
+	public static Set<String> selectedFiles(Jsons.ModpackContentFields content, Set<String> selectedGroups,
+			Map<String, Set<String>> selectedModsByGroup) {
 		if (content == null || content.list == null) return Set.of();
 		if (content.groups == null || content.groups.isEmpty()) {
 			Set<String> everything = new HashSet<>();
@@ -227,10 +233,18 @@ public class ClientSelectionManager {
 
 		Set<String> grouped = new HashSet<>();
 		Set<String> allowed = new HashSet<>();
+		Set<String> modFiles = new HashSet<>();
+		content.list.forEach(item -> {
+			if ("mod".equals(item.type)) modFiles.add(item.file);
+		});
 		content.groups.forEach((id, group) -> {
 			if (group == null || group.files == null) return;
 			grouped.addAll(group.files);
-			if (selectedGroups != null && selectedGroups.contains(id)) allowed.addAll(group.files);
+			if (selectedGroups == null || !selectedGroups.contains(id)) return;
+			Set<String> selectedMods = selectedModsByGroup == null ? null : selectedModsByGroup.get(id);
+			for (String file : group.files) {
+				if (!modFiles.contains(file) || selectedMods == null || selectedMods.contains(file)) allowed.add(file);
+			}
 		});
 
 		content.list.forEach(item -> {
@@ -238,5 +252,22 @@ public class ClientSelectionManager {
 		});
 
 		return allowed;
+	}
+
+	/** Mod file paths grouped by their manifest group, in manifest declaration order. */
+	public static Map<String, Set<String>> modFilesByGroup(Jsons.ModpackContentFields content) {
+		Map<String, Set<String>> result = new LinkedHashMap<>();
+		if (content == null || content.groups == null || content.list == null) return result;
+
+		Set<String> modFiles = new HashSet<>();
+		content.list.forEach(item -> {
+			if ("mod".equals(item.type)) modFiles.add(item.file);
+		});
+		content.groups.forEach((groupId, group) -> {
+			Set<String> files = new LinkedHashSet<>();
+			if (group != null && group.files != null) group.files.stream().filter(modFiles::contains).sorted().forEach(files::add);
+			result.put(groupId, files);
+		});
+		return result;
 	}
 }

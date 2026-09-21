@@ -1,21 +1,23 @@
 package pl.skidam.automodpack.client.ui;
 
 import net.minecraft.ChatFormatting;
+import net.minecraft.client.gui.screens.Screen;
 
 import pl.skidam.automodpack.client.audio.AudioManager;
 import pl.skidam.automodpack.client.ui.versioned.VersionedMatrices;
 import pl.skidam.automodpack.client.ui.versioned.VersionedScreen;
 import pl.skidam.automodpack.client.ui.versioned.VersionedText;
 import pl.skidam.automodpack_loader_core.client.ModpackUpdater;
-import pl.skidam.automodpack_loader_core.screen.ScreenManager;
 
 public class DangerScreen extends VersionedScreen {
 
 	private final ModpackUpdater modpackUpdater;
+	private final Screen parent;
 	private boolean confirmationFinished;
 
-	public DangerScreen(ModpackUpdater modpackUpdater) {
+	public DangerScreen(Screen parent, ModpackUpdater modpackUpdater) {
 		super(VersionedText.literal("DangerScreen"));
+		this.parent = parent;
 		this.modpackUpdater = modpackUpdater;
 
 		if (AudioManager.isMusicPlaying()) AudioManager.stopMusic();
@@ -33,12 +35,20 @@ public class DangerScreen extends VersionedScreen {
 	}
 
 	private void startUpdate() {
+		var content = modpackUpdater.getModpackContent();
+		if (content != null && content.groups != null && !content.groups.isEmpty()) {
+			this.minecraft.gui.setScreen(new ModpackSelectionScreen(this, content, () -> {
+				modpackUpdater.refreshSelection();
+				modpackUpdater.startConfirmedUpdate();
+			}, () -> this.minecraft.gui.setScreen(this)));
+			return;
+		}
 		modpackUpdater.startConfirmedUpdate();
 	}
 
 	private void cancelConfirmation() {
 		modpackUpdater.cancelConfirmation();
-		new ScreenManager().title();
+		this.minecraft.gui.setScreen(parent);
 	}
 
 	@Override
@@ -48,7 +58,7 @@ public class DangerScreen extends VersionedScreen {
 		ModpackUpdater.ConfirmationState state = modpackUpdater.getConfirmationState();
 		if (state != ModpackUpdater.ConfirmationState.EXPIRED && state != ModpackUpdater.ConfirmationState.CANCELLED) return;
 		confirmationFinished = true;
-		new ScreenManager().title();
+		this.minecraft.gui.setScreen(parent);
 	}
 
 	@Override

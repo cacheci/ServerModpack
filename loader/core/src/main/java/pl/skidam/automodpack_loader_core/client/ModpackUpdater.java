@@ -11,6 +11,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -59,6 +60,7 @@ public class ModpackUpdater implements AutoCloseable {
 	public DownloadManager downloadManager;
 	public long totalBytesToDownload = 0;
 	public boolean fullDownload = false;
+	private final Jsons.ModpackContentFields rawServerModpackContent;
 	private Jsons.ModpackContentFields serverModpackContent;
 	public Map<Jsons.ModpackContentFields.ModpackContentItem, List<String>> failedDownloads = new HashMap<>();
 	private final Map<Jsons.ModpackContentFields.ModpackContentItem, DownloadManager.FailureCategory> failedDownloadCategories = new HashMap<>();
@@ -67,6 +69,7 @@ public class ModpackUpdater implements AutoCloseable {
 	private final DownloadClient downloadClient;
 	private final AtomicBoolean closed = new AtomicBoolean();
 	private final AtomicReference<ConfirmationState> confirmationState = new AtomicReference<>(ConfirmationState.INACTIVE);
+	private final CompletableFuture<ConfirmationState> confirmationResult = new CompletableFuture<>();
 	private final UpdateLoopDetector updateLoopDetector = new UpdateLoopDetector();
 	private volatile ScheduledFuture<?> confirmationExpiry;
 	private Path modpackDir;
@@ -74,6 +77,18 @@ public class ModpackUpdater implements AutoCloseable {
 
 	public String getModpackName() {
 		return serverModpackContent.modpackName;
+	}
+
+	public String getModpackId() {
+		return rawServerModpackContent.modpackId;
+	}
+
+	public Map<String, Jsons.ModpackContentFields.ModpackGroupFields> getModpackGroups() {
+		return rawServerModpackContent.groups;
+	}
+
+	public Jsons.ModpackContentFields getModpackContent() {
+		return rawServerModpackContent;
 	}
 
 	public Set<Jsons.ModpackContentFields.ModpackContentItem> getModpackFileList() {
@@ -84,15 +99,25 @@ public class ModpackUpdater implements AutoCloseable {
 		return confirmationState.get();
 	}
 
+	public CompletableFuture<ConfirmationState> getConfirmationResult() {
+		return confirmationResult;
+	}
+
+	public void refreshSelection() {
+		serverModpackContent = ClientSelectionManager.filterToSelection(rawServerModpackContent);
+	}
+
 	public void startConfirmedUpdate() {
 		if (!confirmationState.compareAndSet(ConfirmationState.WAITING, ConfirmationState.STARTED)) return;
 		cancelConfirmationExpiry();
+		confirmationResult.complete(ConfirmationState.STARTED);
 		DownloadClient.NET_EXECUTOR.execute(() -> startUpdate(getModpackFileList()));
 	}
 
 	public void cancelConfirmation() {
 		if (!confirmationState.compareAndSet(ConfirmationState.WAITING, ConfirmationState.CANCELLED)) return;
 		cancelConfirmationExpiry();
+		confirmationResult.complete(ConfirmationState.CANCELLED);
 		close();
 	}
 
@@ -104,6 +129,7 @@ public class ModpackUpdater implements AutoCloseable {
 			DownloadClient downloadClient) {
 		// Filtering here is a safety net; callers that also feed the raw manifest to isUpdate must
 		// filter it themselves so both sides agree on what the modpack contains.
+		this.rawServerModpackContent = modpackContent;
 		this.serverModpackContent = ClientSelectionManager.filterToSelection(modpackContent);
 		this.connectionInfo = connectionInfo;
 		this.modpackSecret = secret;
@@ -689,6 +715,7 @@ public class ModpackUpdater implements AutoCloseable {
 		if (!confirmationState.compareAndSet(ConfirmationState.INACTIVE, ConfirmationState.WAITING)) return false;
 		confirmationExpiry = CONFIRMATION_TIMER.schedule(() -> {
 			if (!confirmationState.compareAndSet(ConfirmationState.WAITING, ConfirmationState.EXPIRED)) return;
+			confirmationResult.complete(ConfirmationState.EXPIRED);
 			close();
 		}, CONFIRMATION_TIMEOUT_MINUTES, TimeUnit.MINUTES);
 		return true;
@@ -701,7 +728,9 @@ public class ModpackUpdater implements AutoCloseable {
 
 	@Override
 	public void close() {
-		confirmationState.compareAndSet(ConfirmationState.WAITING, ConfirmationState.CANCELLED);
+		if (confirmationState.compareAndSet(ConfirmationState.WAITING, ConfirmationState.CANCELLED)) {
+			confirmationResult.complete(ConfirmationState.CANCELLED);
+		}
 		cancelConfirmationExpiry();
 		if (closed.compareAndSet(false, true) && downloadClient != null) downloadClient.close();
 	}
