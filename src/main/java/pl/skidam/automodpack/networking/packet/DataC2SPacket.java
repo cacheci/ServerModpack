@@ -24,6 +24,7 @@ import pl.skidam.automodpack_core.protocol.DownloadClient;
 import pl.skidam.automodpack_core.protocol.ModpackConnectionMode;
 import pl.skidam.automodpack_core.update.UpdateDeferredException;
 import pl.skidam.automodpack_core.utils.AddressHelpers;
+import pl.skidam.automodpack_core.utils.ModpackContentTools;
 import pl.skidam.automodpack_loader_core.ReLauncher;
 import pl.skidam.automodpack_loader_core.client.ModpackUpdater;
 import pl.skidam.automodpack_loader_core.client.ModpackUtils;
@@ -96,8 +97,7 @@ public class DataC2SPacket {
 				return CompletableFuture.completedFuture(buildResponse(true));
 			if (!manifestResult.successful()) return CompletableFuture.completedFuture(buildResponse(null));
 
-			// Keep the complete manifest for first-install group selection, but perform update checks
-			// against the currently selected groups so unselected files never look missing.
+			// Confirm whenever the complete server manifest differs from installed files.
 			Jsons.ModpackContentFields rawServerModpackContent = manifestResult.content();
 			Jsons.ModpackContentFields serverModpackContent = ClientSelectionManager.filterToSelection(rawServerModpackContent);
 			DownloadClient downloadClient = manifestResult.client();
@@ -114,20 +114,23 @@ public class DataC2SPacket {
 
 			ModpackUpdater updater = new ModpackUpdater(rawServerModpackContent, connectionInfo, secret, modpackDir, downloadClient);
 			try {
+				Path installedContentFile = modpackDir.resolve(hostModpackContentFile.getFileName());
+				Jsons.ModpackContentFields installedContent = ModpackContentTools.read(installedContentFile);
+				if (ModpackContentTools.hasLocalFileDifferences(rawServerModpackContent, installedContent, modpackDir)) {
+					if (installedContent == null && (preload || !Files.exists(installedContentFile))) {
+						updater.processModpackUpdate(null);
+						if (preload) {
+							disconnectImmediately(handler);
+							return CompletableFuture.completedFuture(buildResponse(true));
+						}
+					} else {
+						updater.promptForUpdate();
+					}
+					return confirmationResponse(updater, handler);
+				}
+
 				ModpackUtils.UpdateCheckResult updateCheckResult = ModpackUtils.isUpdate(serverModpackContent, modpackDir);
 				if (updateCheckResult.requiresUpdate()) {
-					boolean firstInstall = !Files.exists(modpackDir.resolve(hostModpackContentFile.getFileName()));
-					if (firstInstall) {
-						updater.processModpackUpdate(updateCheckResult);
-						return updater.getConfirmationResult().thenApply(state -> {
-							if (state == ModpackUpdater.ConfirmationState.STARTED) {
-								disconnectImmediately(handler);
-								return buildResponse(true);
-							}
-							return buildResponse(false);
-						});
-					}
-
 					new ScreenManager().waiting();
 					disconnectImmediately(handler);
 					updater.processModpackUpdate(updateCheckResult);
@@ -158,6 +161,16 @@ public class DataC2SPacket {
 		}, DownloadClient.NET_EXECUTOR).exceptionally(e -> {
 			LOGGER.error("Error while handling data packet", e);
 			return buildResponse(null);
+		});
+	}
+
+	private static CompletableFuture<FriendlyByteBuf> confirmationResponse(ModpackUpdater updater, ClientHandshakePacketListenerImpl handler) {
+		return updater.getConfirmationResult().thenApply(state -> {
+			if (state == ModpackUpdater.ConfirmationState.STARTED) {
+				disconnectImmediately(handler);
+				return buildResponse(true);
+			}
+			return buildResponse(false);
 		});
 	}
 

@@ -183,6 +183,37 @@ class ClientSelectionManagerTest {
 	}
 
 	@Test
+	void completeModFingerprintDetectsNewRemovedAndChangedModsBeforeSelectionFiltering() {
+		var original = new Jsons.ModpackContentFields();
+		original.list = Set.of(item("/mods/a.jar", "mod", "hash-a"), item("/config/main.json", "config", "config-hash"));
+		var selection = new Jsons.ClientSelectionManagerFields.ModpackSelection(Set.of("main"), Map.of("main", Set.of()),
+				ClientSelectionManager.modFingerprints(original));
+
+		assertFalse(ClientSelectionManager.hasUnreviewedModChanges(original, selection));
+
+		var added = new Jsons.ModpackContentFields();
+		added.list = Set.of(item("/mods/a.jar", "mod", "hash-a"), item("/mods/b.jar", "mod", "hash-b"));
+		assertTrue(ClientSelectionManager.hasUnreviewedModChanges(added, selection));
+
+		var changed = new Jsons.ModpackContentFields();
+		changed.list = Set.of(item("/mods/a.jar", "mod", "hash-a-v2"));
+		assertTrue(ClientSelectionManager.hasUnreviewedModChanges(changed, selection));
+
+		var removed = new Jsons.ModpackContentFields();
+		removed.list = Set.of();
+		assertTrue(ClientSelectionManager.hasUnreviewedModChanges(removed, selection));
+	}
+
+	@Test
+	void selectionWithoutReviewedSnapshotReopensSelectionOnceForMigration() {
+		var content = new Jsons.ModpackContentFields();
+		content.list = Set.of(item("/mods/a.jar"));
+		var legacySelection = new Jsons.ClientSelectionManagerFields.ModpackSelection(Set.of("main"), Map.of("main", Set.of("/mods/a.jar")));
+
+		assertTrue(ClientSelectionManager.hasUnreviewedModChanges(content, legacySelection));
+	}
+
+	@Test
 	void filterToSelectionDropsUnselectedFilesButKeepsMetadata() {
 		// No saved selection on disk in the test env, so this falls back to recommended groups.
 		var content = new Jsons.ModpackContentFields();
@@ -218,6 +249,10 @@ class ClientSelectionManagerTest {
 	}
 
 	private static Jsons.ModpackContentFields.ModpackContentItem item(String file, String type) {
-		return new Jsons.ModpackContentFields.ModpackContentItem(file, "1", type, false, false, false, "sha", null);
+		return item(file, type, "sha");
+	}
+
+	private static Jsons.ModpackContentFields.ModpackContentItem item(String file, String type, String sha1) {
+		return new Jsons.ModpackContentFields.ModpackContentItem(file, "1", type, false, false, false, sha1, null);
 	}
 }

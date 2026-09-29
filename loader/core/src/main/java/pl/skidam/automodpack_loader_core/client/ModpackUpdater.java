@@ -121,6 +121,12 @@ public class ModpackUpdater implements AutoCloseable {
 		close();
 	}
 
+	/** Opens the download confirmation flow without starting an update first. */
+	public void promptForUpdate() {
+		if (!beginConfirmation()) throw new IllegalStateException("Modpack confirmation is already active");
+		new ScreenManager().danger(this);
+	}
+
 	public ModpackUpdater(Jsons.ModpackContentFields modpackContent, Jsons.ConnectionInfo connectionInfo, Secrets.Secret secret, Path modpackPath) {
 		this(modpackContent, connectionInfo, secret, modpackPath, null);
 	}
@@ -134,6 +140,7 @@ public class ModpackUpdater implements AutoCloseable {
 		this.connectionInfo = connectionInfo;
 		this.modpackSecret = secret;
 		this.modpackDir = modpackPath;
+		this.modpackContentFile = modpackPath.resolve(hostModpackContentFile.getFileName());
 		this.downloadClient = downloadClient;
 
 		if (this.connectionInfo == null || !this.connectionInfo.isComplete()) throw new IllegalArgumentException("connectionInfo is null or empty");
@@ -158,8 +165,7 @@ public class ModpackUpdater implements AutoCloseable {
 					startUpdate(serverModpackContent.list);
 				} else {
 					fullDownload = true;
-					if (!beginConfirmation()) throw new IllegalStateException("Modpack confirmation is already active");
-					new ScreenManager().danger(this);
+					promptForUpdate();
 				}
 			} else {
 				// Handle existing modpack

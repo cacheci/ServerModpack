@@ -52,6 +52,12 @@ public class ClientSelectionManager {
 
 	/** Records both selected groups and the individual mods selected inside them. */
 	public void saveSelection(String modpackId, Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup) {
+		saveSelection(modpackId, selectedGroups, selectedModsByGroup, null);
+	}
+
+	/** Records the selection together with the complete server mod list the player reviewed. */
+	public void saveSelection(String modpackId, Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup,
+			Map<String, String> knownModFingerprints) {
 		if (modpackId == null || modpackId.isBlank()) {
 			LOGGER.warn("Refusing to save a group selection without a modpack ID.");
 			return;
@@ -64,7 +70,9 @@ public class ClientSelectionManager {
 				copiedMods.put(entry.getKey(), entry.getValue() == null ? new HashSet<>() : new HashSet<>(entry.getValue()));
 			}
 		}
-		selections.selections.put(modpackId, new Jsons.ClientSelectionManagerFields.ModpackSelection(new HashSet<>(selectedGroups), copiedMods));
+		Map<String, String> copiedFingerprints = knownModFingerprints == null ? null : new HashMap<>(knownModFingerprints);
+		selections.selections.put(modpackId,
+				new Jsons.ClientSelectionManagerFields.ModpackSelection(new HashSet<>(selectedGroups), copiedMods, copiedFingerprints));
 		save();
 	}
 
@@ -170,6 +178,31 @@ public class ClientSelectionManager {
 
 	private static boolean breaksWith(Jsons.ModpackContentFields.ModpackGroupFields group, String other) {
 		return group != null && group.breaksWith != null && group.breaksWith.contains(other);
+	}
+
+	/**
+	 * Whether the server's complete mod list differs from the list the player last reviewed. This
+	 * check intentionally happens before applying selectedGroups/selectedModsByGroup: otherwise a
+	 * newly added mod would be filtered out and could never reopen the selection screen.
+	 */
+	public static boolean hasUnreviewedModChanges(Jsons.ModpackContentFields content) {
+		if (content == null || content.groups == null || content.groups.isEmpty()) return false;
+		return getManager().getSelection(content.modpackId).map(selection -> hasUnreviewedModChanges(content, selection)).orElse(true);
+	}
+
+	static boolean hasUnreviewedModChanges(Jsons.ModpackContentFields content, Jsons.ClientSelectionManagerFields.ModpackSelection selection) {
+		if (selection == null || selection.knownModFingerprints == null) return true;
+		return !selection.knownModFingerprints.equals(modFingerprints(content));
+	}
+
+	/** Stable path-to-hash snapshot of every mod in the complete server manifest. */
+	public static Map<String, String> modFingerprints(Jsons.ModpackContentFields content) {
+		Map<String, String> fingerprints = new TreeMap<>();
+		if (content == null || content.list == null) return fingerprints;
+		content.list.forEach(item -> {
+			if (item != null && "mod".equals(item.type) && item.file != null) fingerprints.put(item.file, item.sha1 == null ? "" : item.sha1);
+		});
+		return fingerprints;
 	}
 
 	/**

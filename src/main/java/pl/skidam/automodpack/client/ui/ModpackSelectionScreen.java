@@ -37,6 +37,7 @@ public class ModpackSelectionScreen extends VersionedScreen {
 	private final String modpackName;
 	private final Map<String, Jsons.ModpackContentFields.ModpackGroupFields> groups;
 	private final Map<String, Set<String>> modFilesByGroup;
+	private final Map<String, String> modFingerprints;
 	private final Runnable savedAction;
 	private final Runnable canceledAction;
 
@@ -62,6 +63,7 @@ public class ModpackSelectionScreen extends VersionedScreen {
 		this.modpackName = content == null || content.modpackName == null ? "" : content.modpackName;
 		this.groups = content == null || content.groups == null ? Map.of() : content.groups;
 		this.modFilesByGroup = ClientSelectionManager.modFilesByGroup(content);
+		this.modFingerprints = ClientSelectionManager.modFingerprints(content);
 		this.savedAction = savedAction;
 		this.canceledAction = canceledAction;
 
@@ -74,7 +76,10 @@ public class ModpackSelectionScreen extends VersionedScreen {
 		Map<String, Set<String>> savedMods = savedSelection.map(selection -> selection.selectedModsByGroup).orElse(null);
 		if (savedMods != null) {
 			for (var entry : savedMods.entrySet()) {
-				this.chosenModsByGroup.put(entry.getKey(), entry.getValue() == null ? new LinkedHashSet<>() : new LinkedHashSet<>(entry.getValue()));
+				Set<String> currentGroupMods = this.modFilesByGroup.getOrDefault(entry.getKey(), Set.of());
+				Set<String> selectedGroupMods = entry.getValue() == null ? new LinkedHashSet<>() : new LinkedHashSet<>(entry.getValue());
+				selectedGroupMods.retainAll(currentGroupMods);
+				this.chosenModsByGroup.put(entry.getKey(), selectedGroupMods);
 			}
 		}
 		ensureModSelectionsForResolvedGroups();
@@ -296,7 +301,7 @@ public class ModpackSelectionScreen extends VersionedScreen {
 		for (String groupId : resolved) {
 			selectedMods.put(groupId, new LinkedHashSet<>(chosenModsByGroup.getOrDefault(groupId, Set.of())));
 		}
-		ClientSelectionManager.getManager().saveSelection(modpackId, resolved, selectedMods);
+		ClientSelectionManager.getManager().saveSelection(modpackId, resolved, selectedMods, modFingerprints);
 		if (savedAction != null) {
 			savedAction.run();
 			return;

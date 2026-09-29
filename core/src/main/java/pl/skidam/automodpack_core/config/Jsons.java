@@ -380,6 +380,10 @@ public class Jsons {
 			public Set<String> selectedGroups = new HashSet<>();
 			// Null means a legacy group-only selection: every mod in each selected group is selected.
 			public Map<String, Set<String>> selectedModsByGroup;
+			// Complete server mod snapshot from the last time the player confirmed this selection.
+			// It is deliberately independent from selectedModsByGroup so new or changed mods cannot be
+			// hidden by the player's previous selection before the confirmation screen is shown.
+			public Map<String, String> knownModFingerprints;
 
 			public ModpackSelection() {}
 
@@ -388,8 +392,13 @@ public class Jsons {
 			}
 
 			public ModpackSelection(Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup) {
+				this(selectedGroups, selectedModsByGroup, null);
+			}
+
+			public ModpackSelection(Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup, Map<String, String> knownModFingerprints) {
 				this.selectedGroups = selectedGroups;
 				this.selectedModsByGroup = selectedModsByGroup;
+				this.knownModFingerprints = knownModFingerprints;
 			}
 		}
 	}
