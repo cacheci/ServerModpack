@@ -35,10 +35,10 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       changelog: ${{ steps.release.outputs.changelog }}
-      source_branch: ${{ steps.release.outputs.source_branch }}
+      source_ref: ${{ steps.release.outputs.source_ref }}
       source_sha: ${{ steps.release.outputs.source_sha }}
     steps:
-      - name: Resolve destination release and current main
+      - name: Resolve destination release and tagged commit
         id: release
         uses: actions/github-script@v9
         env:
@@ -52,26 +52,26 @@ jobs:
                   repo: context.repo.repo,
                   tag: process.env.TARGET_RELEASE_TAG,
                 }).then(({ data }) => data);
-            const [release, repositoryResponse] = await Promise.all([
-              releaseRequest,
-              github.rest.repos.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-              }),
-            ]);
-            const repository = repositoryResponse.data;
-            const branch = (await github.rest.repos.getBranch({
+            const release = await releaseRequest;
+            const tagObject = (await github.rest.git.getRef({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              branch: repository.default_branch,
-            })).data;
+              ref: `tags/${release.tag_name}`,
+            })).data.object;
+            const tagCommit = tagObject.type === 'tag'
+              ? (await github.rest.git.getTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag_sha: tagObject.sha,
+                })).data.object
+              : tagObject;
             core.setOutput('tag', release.tag_name);
             core.setOutput('changelog', release.body || '');
-            core.setOutput('source_branch', repository.default_branch);
-            core.setOutput('source_sha', branch.commit.sha);
+            core.setOutput('source_ref', release.target_commitish || tagCommit.sha);
+            core.setOutput('source_sha', tagCommit.sha);
       - name: Summarize release
         env:
-          SOURCE_BRANCH: ${{ steps.release.outputs.source_branch }}
+          SOURCE_REF: ${{ steps.release.outputs.source_ref }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
           TAG: ${{ steps.release.outputs.tag }}
           TARGETS: ${{ inputs.target_subproject || 'all' }}
@@ -79,12 +79,12 @@ jobs:
           {
             echo '## Release parameters'
             echo "- Destination tag: \`$TAG\`"
-            echo "- Source: \`$SOURCE_BRANCH\` at \`$SOURCE_SHA\`"
+            echo "- Source: \`$SOURCE_REF\` at \`$SOURCE_SHA\`"
             echo "- Publish targets: \`$TARGETS\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build:
-    name: Build current main
+    name: Build tagged commit
     needs: prepare
     uses: ./.github/workflows/build.yml
     with:
@@ -104,11 +104,13 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
+          # Releases are tagged with the exact version of the tagged commit,
+          # which is v<major>.<minor>.<git commit count>.
           version=$(jq -r '.include[0].mod_version' <<<"$MATRIX")
           [[ "$version" != null && -n "$version" ]] || { echo "Build matrix has no version" >&2; exit 1; }
           tag_version=${TAG#v}
           [[ "$version" == "$tag_version" ]] || {
-            echo "Build version $version does not match destination tag $TAG" >&2
+            echo "Build version $version does not match destination tag $TAG, expected tag v$version" >&2
             exit 1
           }
 

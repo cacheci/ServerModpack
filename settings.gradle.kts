@@ -36,6 +36,38 @@ plugins {
 	id("dev.kikugie.stonecutter")
 }
 
+// Dev builds derive the patch version from the git commit count: <major>.<minor>.<commit count>.
+// Release tags follow the same scheme, e.g. v4.0.1511.
+// The literal mod_version is the source of the major.minor prefix and the fallback version used
+// whenever git history is unavailable (no repository, no git binary, or a shallow clone).
+val fallbackModVersion = providers.gradleProperty("mod_version").get()
+val modVersionPrefix = fallbackModVersion.substringBeforeLast('.', missingDelimiterValue = "")
+
+fun gitStdout(vararg args: String): String? =
+	try {
+		providers
+			.exec {
+				commandLine("git", *args)
+				isIgnoreExitValue = true
+			}.standardOutput.asText
+			.get()
+			.trim()
+			.takeIf(String::isNotEmpty)
+	} catch (_: Exception) {
+		null
+	}
+
+val commitCount =
+	if (modVersionPrefix.isEmpty() || gitStdout("rev-parse", "--is-shallow-repository") != "false") {
+		null
+	} else {
+		gitStdout("rev-list", "--count", "HEAD")?.toIntOrNull()
+	}
+
+gradle.beforeProject {
+	extensions.extraProperties.set("mod_version", commitCount?.let { "$modVersionPrefix.$it" } ?: fallbackModVersion)
+}
+
 include(":core")
 if (providers.gradleProperty("automodpack.autotest").isPresent) {
 	include(":autotest-fixtures")
