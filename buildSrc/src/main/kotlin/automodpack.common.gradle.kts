@@ -74,6 +74,8 @@ val mergeJarTask =
 		this.mergedDirPath.set(project.rootProject.projectDir.absolutePath + "/merged")
 		this.rootProjectPath.set(project.rootProject.projectDir.absolutePath)
 		this.loaderModuleName.set(getLoaderModuleName(project.name))
+		// Target build scripts set the version after this plugin is applied, so read it lazily.
+		this.projectVersion.set(providers.provider { project.version.toString() })
 		this.buildDirectory.set(layout.buildDirectory)
 		this.outputJar.set(layout.buildDirectory.file("merged-jar-path.txt"))
 
@@ -96,7 +98,11 @@ val mergeJarTask =
 		// We use a provider so this is calculated just before task execution, ensuring files exist.
 		this.inputHash.set(
 			provider {
-				val outputFile = File(mergedDirPath.get(), getMergedJarPath(buildDirectory.get().dir("libs").asFile).name)
+				val outputFile =
+					File(
+						mergedDirPath.get(),
+						getMergedJarPath(buildDirectory.get().dir("libs").asFile, project.version.toString()).name,
+					)
 				if (!outputFile.exists()) { // Return a random hash if the output file doesn't exist yet. We need to have something.
 					return@provider BigInteger(1, MessageDigest.getInstance("MD5").digest(System.currentTimeMillis().toString().toByteArray())).toString(16)
 				}

@@ -36,8 +36,16 @@ fun getAllDependentLoaderModules(name: String): List<String> {
     return list
 }
 
-fun getMergedJarPath(buildDirLibs: File): File {
-    return buildDirLibs.listFiles()
-        ?.firstOrNull { file -> file.isFile && !file.name.endsWith("-sources.jar") && file.name.endsWith(".jar") }
-        ?: error("No jar found to merge in build/libs directory! ${buildDirLibs.absolutePath}")
+// Stale jars from earlier versions stay in build/libs, so select by the current version instead
+// of taking whatever happens to be there.
+fun getMergedJarPath(buildDirLibs: File, version: String): File {
+    val jars = buildDirLibs.listFiles()
+        ?.filter { file -> file.isFile && !file.name.endsWith("-sources.jar") && file.name.endsWith("-$version.jar") }
+        .orEmpty()
+
+    return jars.singleOrNull()
+        ?: error(
+            "Expected exactly one $version jar to merge in ${buildDirLibs.absolutePath}, " +
+                "found: ${jars.joinToString(", ") { it.name }.ifEmpty { "none" }}",
+        )
 }

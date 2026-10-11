@@ -26,6 +26,9 @@ abstract class MergeJarTask : DefaultTask() {
     @get:Input
     abstract val loaderModuleName: Property<String>
 
+    @get:Input
+    abstract val projectVersion: Property<String>
+
     @get:Internal
     abstract val buildDirectory: DirectoryProperty
 
@@ -42,17 +45,16 @@ abstract class MergeJarTask : DefaultTask() {
         val mergedDir = File(mergedDirPath.get())
         mergedDir.mkdirs()
 
+        val version = projectVersion.get()
         val buildDirLibs = buildDirectory.get().dir("libs").asFile
-        val jarToMerge = getMergedJarPath(buildDirLibs)
+        val jarToMerge = getMergedJarPath(buildDirLibs, version)
 
         val time = System.currentTimeMillis()
         println("Found $jarToMerge to merge. Merging...")
 
         val loaderModule = loaderModuleName.get()
         val loaderBuildDir = File(rootProjectPath.get(), "loader/${loaderModule.replace("-", "/")}/build/libs")
-        val loaderFile = loaderBuildDir.listFiles()
-            ?.single { it.isFile && !it.name.endsWith("-sources.jar") && it.name.endsWith(".jar") }
-            ?: error("No loader jar found in ${loaderBuildDir.absolutePath}")
+        val loaderFile = getMergedJarPath(loaderBuildDir, version)
 
         val finalJar = File(mergedDir, jarToMerge.name)
         val manifest = mergeStonecutterMetadata(loaderFile, jarToMerge)
