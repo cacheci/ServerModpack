@@ -88,7 +88,7 @@ public class HandshakeS2CPacket {
 				}
 			}
 
-			if (!isAcceptedLoader || !clientHandshakePacket.amVersion.equals(AM_VERSION)) {
+			if (!isAcceptedLoader || !sameBaseVersion(clientHandshakePacket.amVersion, AM_VERSION)) {
 				Component reason = VersionedText.literal("AutoModpack version mismatch! Install " + AM_VERSION + " version of AutoModpack mod for "
 						+ LOADER_MANAGER.getPlatformType().toString().toLowerCase() + " to play on this server!");
 				if (isClientVersionHigher(clientHandshakePacket.amVersion)) {
@@ -128,18 +128,27 @@ public class HandshakeS2CPacket {
 	}
 
 	private static boolean isClientVersionHigher(String clientVersion) {
-		String versionPattern = "\\d+\\.\\d+\\.\\d+";
-		if (!clientVersion.matches(versionPattern)) return false;
-
-		if (!clientVersion.equals(AM_VERSION)) {
-			String[] clientVersionComponents = clientVersion.split("\\.");
-			String[] serverVersionComponents = AM_VERSION.split("\\.");
-
-			for (int i = 0, n = clientVersionComponents.length; i < n; i++) {
-				if (clientVersionComponents[i].compareTo(serverVersionComponents[i]) > 0) return true;
-			}
+		if (!isValidVersion(clientVersion) || !isValidVersion(AM_VERSION)) return false;
+		String[] clientVersionComponents = clientVersion.split("\\.");
+		String[] serverVersionComponents = AM_VERSION.split("\\.");
+		for (int i = 0; i < 3; i++) {
+			int comparison = new java.math.BigInteger(clientVersionComponents[i]).compareTo(new java.math.BigInteger(serverVersionComponents[i]));
+			if (comparison != 0) return comparison > 0;
 		}
-
 		return false;
+	}
+
+	private static boolean sameBaseVersion(String clientVersion, String serverVersion) {
+		if (!isValidVersion(clientVersion) || !isValidVersion(serverVersion)) return false;
+		String[] clientVersionComponents = clientVersion.split("\\.");
+		String[] serverVersionComponents = serverVersion.split("\\.");
+		for (int i = 0; i < 3; i++) {
+			if (!clientVersionComponents[i].equals(serverVersionComponents[i])) return false;
+		}
+		return true;
+	}
+
+	private static boolean isValidVersion(String version) {
+		return version != null && version.matches("\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?");
 	}
 }

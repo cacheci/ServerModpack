@@ -105,7 +105,7 @@ jobs:
         run: |
           set -euo pipefail
           # Releases are tagged with the exact version of the tagged commit,
-          # which is v<major>.<minor>.<git commit count>.
+          # which is v<major>.<minor>.<patch>.<git commit count>.
           version=$(jq -r '.include[0].mod_version' <<<"$MATRIX")
           [[ "$version" != null && -n "$version" ]] || { echo "Build matrix has no version" >&2; exit 1; }
           tag_version=${TAG#v}
