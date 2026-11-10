@@ -84,7 +84,7 @@ public class DangerScreen extends VersionedScreen {
 
 	@Override
 	public boolean onKeyPress(int keyCode, int scanCode, int modifiers) {
-		if (keyCode == 257) { // Enter key (GLFW_KEY_ENTER = 257)
+		if (isEnterKey(keyCode)) {
 			startUpdate();
 			return true;
 		}

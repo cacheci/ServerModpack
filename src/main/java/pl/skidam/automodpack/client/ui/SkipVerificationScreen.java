@@ -3,11 +3,11 @@ package pl.skidam.automodpack.client.ui;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.util.Util;
 
 import pl.skidam.automodpack.client.ui.versioned.VersionedMatrices;
 import pl.skidam.automodpack.client.ui.versioned.VersionedScreen;
 import pl.skidam.automodpack.client.ui.versioned.VersionedText;
+import pl.skidam.automodpack_core.utils.UriOpener;
 import pl.skidam.automodpack_loader_core.screen.ScreenManager;
 
 public class SkipVerificationScreen extends VersionedScreen {
@@ -49,7 +49,7 @@ public class SkipVerificationScreen extends VersionedScreen {
 				button -> confirmSkip());
 
 		this.wikiButton = iconButtonWidget(this.width / 2 + 22 + 150, this.height / 2 + 15, 20, 16,
-				button -> Util.getPlatform().openUri("https://moddedmc.wiki/en/project/automodpack/latest/docs/technicals/certificate"),
+				button -> UriOpener.openUri("https://moddedmc.wiki/en/project/automodpack/latest/docs/technicals/certificate"),
 				"link");
 
 		setTooltip(wikiButton, VersionedText.translatable("automodpack.learnmore"));

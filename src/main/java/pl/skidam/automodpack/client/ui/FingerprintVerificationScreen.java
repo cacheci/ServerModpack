@@ -1,7 +1,6 @@
 package pl.skidam.automodpack.client.ui;
 
 import net.minecraft.ChatFormatting;
-import net.minecraft.util.Util;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.toasts.SystemToast;
@@ -11,6 +10,7 @@ import pl.skidam.automodpack.client.ui.versioned.VersionedMatrices;
 import pl.skidam.automodpack.client.ui.versioned.VersionedScreen;
 import pl.skidam.automodpack.client.ui.versioned.VersionedText;
 import pl.skidam.automodpack_core.Constants;
+import pl.skidam.automodpack_core.utils.UriOpener;
 import pl.skidam.automodpack_loader_core.screen.ScreenManager;
 
 public class FingerprintVerificationScreen extends VersionedScreen {
@@ -89,7 +89,7 @@ public class FingerprintVerificationScreen extends VersionedScreen {
 
 		// Wiki button (icon button aligned to the right of text field)
 		this.wikiButton = iconButtonWidget(this.width / 2 + 22 + 150, this.height / 2 + 15, 20, 16,
-				button -> Util.getPlatform().openUri("https://moddedmc.wiki/en/project/automodpack/latest/docs/technicals/certificate"),
+				button -> UriOpener.openUri("https://moddedmc.wiki/en/project/automodpack/latest/docs/technicals/certificate"),
 				"link");
 
 		setTooltip(wikiButton, VersionedText.translatable("automodpack.learnmore"));
@@ -172,7 +172,7 @@ public class FingerprintVerificationScreen extends VersionedScreen {
 
 	@Override
 	public boolean onKeyPress(int keyCode, int scanCode, int modifiers) {
-		if (textField.isFocused() && keyCode == 257) { // Enter key (GLFW_KEY_ENTER = 257)
+		if (textField.isFocused() && isEnterKey(keyCode)) {
 			if (verifyButton.active) {
 				verifyFingerprint();
 				return true;

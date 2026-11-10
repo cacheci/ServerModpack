@@ -3,7 +3,6 @@ package pl.skidam.automodpack.client.ui;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
-import net.minecraft.util.Util;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
@@ -16,6 +15,7 @@ import pl.skidam.automodpack.client.ui.widget.ListEntryWidget;
 import pl.skidam.automodpack_core.config.ConfigTools;
 import pl.skidam.automodpack_core.config.Jsons;
 import pl.skidam.automodpack_core.utils.ModpackContentTools;
+import pl.skidam.automodpack_core.utils.UriOpener;
 import pl.skidam.automodpack_loader_core.client.Changelogs;
 
 public class ChangelogScreen extends VersionedScreen {
@@ -100,7 +100,7 @@ public class ChangelogScreen extends VersionedScreen {
 				}
 
 				String mainPageUrl = selectedEntry.getMainPageUrl();
-				Util.getPlatform().openUri(mainPageUrl);
+				UriOpener.openUri(mainPageUrl);
 			}
 		);
 	}

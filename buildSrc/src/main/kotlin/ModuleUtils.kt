@@ -18,10 +18,10 @@ fun getLoaderModuleName(projectName: String): String {
         projectName.contains("neoforge") -> when (minecraftFamily) {
             "1.21.8", "1.21.5", "1.21.4", "1.21.1" -> "neoforge-fml4"
             "1.21.10", "1.21.11" -> "neoforge-fml10"
-            "26.1", "26.2" -> "neoforge-fml11"
+            "26.1", "26.2", "26.3" -> "neoforge-fml11"
             else -> error("Unknown neoforge loader module for Minecraft family: $minecraftFamily")
         }
-        projectName.contains("forge") -> if (minecraftFamily == "1.18.2") "forge-fml40" else "forge-fml47"
+        projectName.contains("forge") -> "forge-fml47"
         else -> error("Unknown loader type")
     }
 }

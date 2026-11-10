@@ -15,6 +15,9 @@ import net.minecraft.resources.Identifier;
 /*? if >= 1.21.9 {*/
 import net.minecraft.client.input.KeyEvent;
 /*?}*/
+/*? if >=26.3 {*/
+/*import com.mojang.blaze3d.platform.InputConstants;
+*//*?}*/
 
 /*? if >=1.21.6 {*/
 import net.minecraft.client.renderer.RenderPipelines;
@@ -164,7 +167,11 @@ public class VersionedScreen extends Screen {
 	/*? if >= 1.21.9 {*/
 	@Override
 	public boolean keyPressed(KeyEvent event) {
+		/*? if <26.3 {*/
 		return onKeyPress(event.key(), event.scancode(), event.modifiers());
+		/*?} else {*/
+		/*return onKeyPress(event.key(), event.keycode(), event.modifiers());
+		*//*?}*/
 	}
 
 	// use this method in code
@@ -183,4 +190,12 @@ public class VersionedScreen extends Screen {
 		return super.keyPressed(keyCode, scanCode, modifiers);
 	}
 	*//*?}*/
+
+	protected final boolean isEnterKey(int keyCode) {
+		/*? if <26.3 {*/
+		return keyCode == 257 || keyCode == 335;
+		/*?} else {*/
+		/*return keyCode == InputConstants.KEY_RETURN || keyCode == InputConstants.KEY_NUMPADENTER;
+		*//*?}*/
+	}
 }
