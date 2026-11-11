@@ -116,7 +116,8 @@ public class DataC2SPacket {
 			try {
 				Path installedContentFile = modpackDir.resolve(hostModpackContentFile.getFileName());
 				Jsons.ModpackContentFields installedContent = ModpackContentTools.read(installedContentFile);
-				if (ModpackContentTools.hasLocalFileDifferences(rawServerModpackContent, installedContent, modpackDir)) {
+				if (ClientSelectionManager.hasUnreviewedModChanges(rawServerModpackContent)
+						|| ModpackContentTools.hasLocalFileDifferences(serverModpackContent, installedContent, modpackDir)) {
 					if (installedContent == null && (preload || !Files.exists(installedContentFile))) {
 						updater.processModpackUpdate(null);
 						if (preload) {

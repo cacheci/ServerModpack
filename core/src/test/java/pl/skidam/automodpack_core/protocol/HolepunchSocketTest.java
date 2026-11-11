@@ -50,10 +50,32 @@ class HolepunchSocketTest {
 			socket.close();
 			assertEquals(-1, read.join());
 		});
-		assertFalse(socket.isConnected());
+		assertTrue(socket.isClosed());
+		assertTrue(socket.isConnected());
 	}
 
 	private static final class StubConnection implements HolepunchConnection {
+		@Override
+		public boolean isRaw() {
+			return false;
+		}
+
+		@Override
+		public byte[] transportSecret() {
+			return new byte[16];
+		}
+
+		@Override
+		public CompletionStage<Void> commitTransportUpgrade() {
+			return CompletableFuture.completedFuture(null);
+		}
+
+		@Override
+		public void pauseReads() {}
+
+		@Override
+		public void resumeReads() {}
+
 		@Override
 		public CompletionStage<Void> write(ByteBuffer data) {
 			return CompletableFuture.completedFuture(null);

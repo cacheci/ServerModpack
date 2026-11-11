@@ -3,65 +3,42 @@ package pl.skidam.automodpack_core.modpack;
 import static pl.skidam.automodpack_core.Constants.*;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 
 import pl.skidam.automodpack_core.config.Jsons;
-import pl.skidam.automodpack_core.utils.*;
+import pl.skidam.automodpack_core.utils.ModpackContentTools;
 import pl.skidam.automodpack_core.utils.cache.FileMetadataCache;
 
 public class ModpackExecutor {
-	private final ThreadPoolExecutor CREATION_EXECUTOR = (ThreadPoolExecutor) Executors.newFixedThreadPool(
-			Math.max(1, Runtime.getRuntime().availableProcessors() * 2), new CustomThreadFactoryBuilder().setNameFormat("AutoModpackCreation-%d").build());
 	public final Map<String, ModpackContent> modpacks = new ConcurrentHashMap<>();
 	private final Object generationLock = new Object();
 	private CompletableFuture<Jsons.ModpackContentFields> refreshInFlight;
+	private volatile boolean generating;
 
 	private ModpackContent init() {
-		if (isGenerating()) {
-			LOGGER.error("Called init() while generating!");
-			return null;
-		}
-
-		try {
-			if (!Files.exists(hostContentModpackDir)) {
-				Files.createDirectories(hostContentModpackDir);
-				Files.createDirectory(hostContentModpackDir.resolve("mods"));
-				Files.createDirectory(hostContentModpackDir.resolve("config"));
-				Files.createDirectory(hostContentModpackDir.resolve("shaderpacks"));
-				Files.createDirectory(hostContentModpackDir.resolve("resourcepacks"));
-			}
-		} catch (IOException e) {
-			LOGGER.error("Failed to create modpack content directory!", e);
-			return null;
-		}
-
-		return new ModpackContent(serverConfig.modpackName, SmartFileUtils.CWD, hostContentModpackDir, serverConfig.groups, CREATION_EXECUTOR);
+		return new ModpackContent();
 	}
 
 	public boolean generateNew(ModpackContent content) {
 		synchronized (generationLock) {
 			if (content == null) return false;
-			boolean generated;
+			generating = true;
 			try (var cache = FileMetadataCache.open(hashCacheDBFile)) {
-				generated = content.create(cache);
+				boolean generated = content.create(cache);
+				if (generated) register(content);
+				return generated;
+			} finally {
+				generating = false;
 			}
-			if (generated) register(content);
-			return generated;
 		}
 	}
 
 	public boolean generateNew() {
 		synchronized (generationLock) {
-			ModpackContent content = init();
-			if (content == null) return false;
-			boolean generated;
-			try (var cache = FileMetadataCache.open(hashCacheDBFile)) {
-				generated = content.create(cache);
-			}
-			if (generated) register(content);
-			return generated;
+			return generateNew(init());
 		}
 	}
 
@@ -94,16 +71,6 @@ public class ModpackExecutor {
 	}
 
 	public boolean isGenerating() {
-		int activeCount = CREATION_EXECUTOR.getActiveCount();
-		int queueSize = CREATION_EXECUTOR.getQueue().size();
-		return activeCount > 0 || queueSize > 0;
-	}
-
-	public ThreadPoolExecutor getExecutor() {
-		return CREATION_EXECUTOR;
-	}
-
-	public void stop() {
-		CREATION_EXECUTOR.shutdown();
+		return generating;
 	}
 }

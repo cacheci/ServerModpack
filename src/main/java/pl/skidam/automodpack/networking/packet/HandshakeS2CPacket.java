@@ -17,7 +17,6 @@ import net.minecraft.server.*;
 import net.minecraft.server.network.ServerLoginPacketListenerImpl;
 
 import pl.skidam.automodpack.client.ui.versioned.VersionedText;
-import pl.skidam.automodpack.init.Common;
 import pl.skidam.automodpack.mixin.core.ServerLoginNetworkHandlerAccessor;
 import pl.skidam.automodpack.modpack.GameHelpers;
 import pl.skidam.automodpack.networking.PacketSender;
@@ -59,16 +58,12 @@ public class HandshakeS2CPacket {
 		if (!GameHelpers.isPlayerAuthorized(connection.getRemoteAddress(), profile)) return;
 
 		if (!understood) {
-			Common.players.put(playerName, false);
 			LOGGER.warn("{} has not installed AutoModpack.", playerName);
-			if (serverConfig.requireAutoModpackOnClient) {
-				Component reason = VersionedText.literal(
-						"AutoModpack mod for " + LOADER_MANAGER.getPlatformType().toString().toLowerCase() + " modloader is required to play on this server!");
-				connection.send(new ClientboundLoginDisconnectPacket(reason));
-				connection.disconnect(reason);
-			}
+			Component reason = VersionedText.literal(
+					"AutoModpack mod for " + LOADER_MANAGER.getPlatformType().toString().toLowerCase() + " modloader is required to play on this server!");
+			connection.send(new ClientboundLoginDisconnectPacket(reason));
+			connection.disconnect(reason);
 		} else {
-			Common.players.put(playerName, true);
 			handleHandshake(connection, profile, buf, sender);
 		}
 	}
@@ -116,7 +111,7 @@ public class HandshakeS2CPacket {
 			int advertisedEndpointPort = serverConfig.advertisedEndpointPort;
 			LOGGER.info("Sending {} AutoModpack endpoint: {}:{} ({})", GameHelpers.getPlayerName(profile), advertisedEndpointHost, advertisedEndpointPort, serverConfig.connectionMode);
 
-			DataPacket dataPacket = new DataPacket(advertisedEndpointHost, advertisedEndpointPort, secret, serverConfig.requireAutoModpackOnClient, serverConfig.connectionMode);
+			DataPacket dataPacket = new DataPacket(advertisedEndpointHost, advertisedEndpointPort, secret, serverConfig.connectionMode);
 			String packetContentJson = dataPacket.toJson();
 
 			FriendlyByteBuf outBuf = new FriendlyByteBuf(Unpooled.buffer());

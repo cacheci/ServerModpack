@@ -7,14 +7,11 @@ import pl.skidam.automodpack.networking.ModPackets;
 import pl.skidam.automodpack_core.modpack.ModpackExecutor;
 import pl.skidam.automodpack_core.protocol.netty.NettyServer;
 
-import java.util.HashMap;
-import java.util.Map;
 
 import static pl.skidam.automodpack_core.Constants.*;
 
 public class Common {
 
-	public static Map<String, Boolean> players = new HashMap<>();
 	public static MinecraftServer server = null;
 	private static boolean serverRuntimePrepared;
 
@@ -62,7 +59,6 @@ public class Common {
 		if (!serverRuntimePrepared) return;
 
 		hostServer.stop();
-		modpackExecutor.stop();
 		hostServer = null;
 		modpackExecutor = null;
 		serverRuntimePrepared = false;

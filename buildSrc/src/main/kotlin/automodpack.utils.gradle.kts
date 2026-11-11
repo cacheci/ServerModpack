@@ -17,6 +17,7 @@ tasks.named<ProcessResources>("processResources") {
 			putIfNotEmpty("description", prop("mod.description"))
 		}
 
+	inputs.properties(props)
 	filesMatching(listOf("pack.mcmeta", "fabric.mod.json", "META-INF/neoforge.mods.toml", "META-INF/mods.toml")) {
 		expand(props)
 	}

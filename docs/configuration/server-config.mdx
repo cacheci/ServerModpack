@@ -1,125 +1,42 @@
 # Server Configuration
 
-**File Location:** `~/automodpack/automodpack-server.json`
+The server reads `config/servermodpack/server.json` from its working directory. The file is created with defaults when absent.
 
-This configuration file controls the behavior of the AutoModpack server-side component. It handles how files are synced to clients, how the hosting server binds to ports, and security validation.
+## Synced content
 
-## General Settings
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `syncedModFolders` | `["mods", "mods/client_recommended"]` | Directories scanned recursively for mod JARs. Each accepted JAR is sent to the client's `mods/` directory. |
+| `server-only-mods` | `[]` | Mod IDs excluded from the client manifest. Mods declaring a server-only environment are also excluded. |
+| `syncedConfigs` | `[]` | Files, directories, or glob patterns sent to the client's `config/` directory. Prefix a pattern with `!` to exclude matches. |
+| `nonModpackFilesToDelete` | `{}` | Client paths mapped to exact SHA-1 values for files the client may remove. |
+| `autoExcludeUnnecessaryFiles` | `true` | Excludes empty, hidden, temporary, disabled, and backup files. |
 
-| Setting                       | Default         | Description                                                                                                                                       |
-|-------------------------------|-----------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DO_NOT_CHANGE_IT`            | `<version>`     | Internal Use Only. Used to auto-migrate config versions during updates. Do not modify this manually.                                              |
-| `modpackName`                 | `""`            | The display name of the modpack shown in AutoModpack user interfaces. It does not determine pack identity or client storage paths.                |
-| `modpackHost`                 | `true`          | Enables AutoModpack's built-in connection handling. When false, connection information can still point clients to an externally handled endpoint. |
-| `generateModpackOnStart`      | `true`          | Automatically scans files and regenerates modpack metadata every time the server starts.                                                          |
-| `autoExcludeServerSideMods`   | `true`          | Automatically excludes mods marked as "Server Side Only" in their metadata.                                                                       |
-| `autoExcludeUnnecessaryFiles` | `true`          | Automatically skips syncing files that are empty, hidden, temporary, disabled, or backup files.                                                   |
-| `requireAutoModpackOnClient`  | `true`          | If true, players are kicked if they do not have AutoModpack installed.                                                                            |
-| `acceptedLoaders`             | `["<current>"]` | A list of modloaders allowed to connect (e.g., Fabric, Forge). Use with caution; most mods are loader-specific.                                   |
-| `selfUpdater`                 | `false`         | Retained for configuration compatibility; self-updates are disabled in this server-only build.                                                    |
+Paths in `syncedModFolders` and `syncedConfigs` are relative to the server working directory unless they begin with `/`, in which case they are absolute. `syncedConfigs` accepts `*`, `**`, and `?` glob patterns. Files from outside the working directory retain their path below the selected directory when mapped to the client's `config/` directory. Two source files cannot claim the same client path.
 
-## File Synchronization
+Every mod in the manifest has a mod ID, version, and SHA-1. JARs without a readable ID or version are skipped. Mods whose ID, version, and SHA-1 match a JAR in the client's own `mods/` directory are hidden from the selection screen. Other mods are selected initially and can be deselected individually.
 
-These settings control which files are sent to the client and which files the client is allowed to customize.
+The generated manifest is stored at `config/automodpack/generated.json`. It is produced by AutoModpack and should not be edited. The server config and generated manifest are never included in `syncedConfigs`.
 
-| Setting                            | Default                                                                    | Description                                                                                                                                                                                       |
-|------------------------------------|----------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `syncedFiles`                      | `["/mods/*.jar", "/kubejs/**", "!/kubejs/server_scripts/**", "/emotes/*"]` | List of relative paths to sync to the client. Supports wildcards.                                                                                                                                 |
-| `allowEditsInFiles`                | `["/options.txt", "/config/**"]`                                           | Files clients download once but can edit locally. Updates to these files on the server are ignored by the client. Supports wildcards.                                                             |
-| `overwriteEditableFiles`           | `[]`                                                                       | Editable files to overwrite when their server version changes. Paths must also match `allowEditsInFiles`. Local edits are otherwise preserved. Supports wildcards.                                |
-| `forceCopyFilesToStandardLocation` | `[]`                                                                       | Forces specific files to copy to the standard Minecraft folder instead of the AutoModpack instance folder. Supports wildcards. Avoid using this option when possible, it breaks seamless updates. |
-| `nonModpackFilesToDelete`          | `[]`                                                                       | List of files to request deletion from the client (e.g., old mods). See Deleting Files below.                                                                                                     |
+## Hosting and connection
 
-## Globbing wildcards
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `modpackHost` | `true` | Enables built-in modpack hosting. |
+| `generateModpackOnStart` | `true` | Regenerates the manifest when the server starts. |
+| `acceptedLoaders` | Current loader | Loaders accepted during the Minecraft login handshake. |
+| `bindAddress` | `""` | Local address for a dedicated listener. |
+| `bindPort` | `-1` | Listener port; behavior depends on `connectionMode`. |
+| `advertisedEndpointHost` | `""` | Download host sent to clients; empty uses the connected host. |
+| `advertisedEndpointPort` | `-1` | Download port sent to clients; `-1` uses the connected port. |
+| `connectionMode` | Target dependent | `HOLEPUNCH`, `MAGIC_PACKET`, or `DIRECT`. |
+| `disableInternalTLS` | `false` | Expects an external TLS terminator when true. Clients still require TLS. |
+| `updateIpsOnEveryStart` | `false` | Refreshes the advertised host on startup. |
+| `bandwidthLimit` | `0` | Upload limit in Mbps; zero means unlimited. |
+| `validateSecrets` | `true` | Checks per-player download secrets. |
+| `secretLifetime` | `336` | Secret lifetime in hours. |
+| `selfUpdater` | `false` | Server-only builds do not self-update. |
 
-For `syncedFiles`, `allowEditsInFiles`, `overwriteEditableFiles` and `forceCopyFilesToStandardLocation`, use the following patterns relative to the server root:
+`HOLEPUNCH` uses a marked Minecraft Login connection. `MAGIC_PACKET` uses AMMH/AMOK before TLS, on the Minecraft port when `bindPort` is `-1` or on a dedicated port otherwise. `DIRECT` expects TLS immediately on a dedicated port, or an external endpoint when `bindPort` is `-1`.
 
-- `*` : Matches files in a single directory (e.g., `/mods/*.jar`).
-- `**` : Matches files recursively in all subdirectories (e.g., `/kubejs/**`).
-- `!` : Prefix to exclude a file/folder (e.g., `!/kubejs/server_scripts/**`).
-
-Read more about globbing on the [Globbing Wikipedia article](https://wikipedia.org/wiki/Glob_(programming)#Syntax).
-
-## Deleting Files (nonModpackFilesToDelete)
-
-If you simply want to remove a file from your modpack, **don't use** this option, instead just delete the file from your server.
-
-This feature allows you to remove specific files from a client's machine which are not part of the modpack being synced. This is useful for cleaning up old mods or files that may conflict with the current modpack.
-
-**Note:** This feature is stricter for security reasons. It requires exact file hashes and does not support wildcards.
-
-### How to Configure
-
-This setting accepts a list of objects containing a path and a SHA1 hash.
-
-- **Exact Match:** The client checks if the file exists at the path and matches the hash. If yes, it is deleted.
-- **Parent Scan:** If the file isn't found at the exact path or only a parent directory is provided, the client scans the directory for any file matching the hash and deletes it.
-
-### Example
-
-```json
-"nonModpackFilesToDelete": {
-  "/mods/lithium-fabric-0.15.1+mc1.21.1.jar": "6038cf136da413753345bf9d48e5798241439894",
-  "/mods/": "97452cfadfde1f8f8c67838643019eabafa58fbb"
-},
-```
-
-<details>
-<summary>How to get the SHA1 Hash</summary>
-
-You must provide the hash for the specific version of the file you want to delete.
-
-### Option 1: Linux Command Line
-
-```bash
-sha1sum path/to/file
-```
-
-### Option 2: Online Tools
-
-You can use a browser-based calculator like [SHA1 File Checksum](https://emn178.github.io/online-tools/sha1_checksum.html).
-</details>
-
-## Network & Hosting
-
-These settings control how the file server is exposed to the internet.
-
-| Setting                  | Default                                                    | Description                                                                                                                                    |
-|--------------------------|------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
-| `bindAddress`            | `""`                                                       | The local IP for a dedicated listener. Empty binds to 0.0.0.0 or ::0. Used only when the selected mode starts a dedicated listener.            |
-| `bindPort`               | `-1`                                                       | Controls built-in TCP handling according to `connectionMode`; see the matrix below. Values unused by the selected mode are preserved.          |
-| `advertisedEndpointHost` | `""`                                                       | The public hostname/IP sent to clients as the download endpoint. Empty uses the connected hostname.                                            |
-| `advertisedEndpointPort` | `-1`                                                       | The public TCP port sent to clients as the download endpoint. -1 uses the connected port.                                                      |
-| `bandwidthLimit`         | `0`                                                        | Upload speed limit in Mbps (0 = unlimited).                                                                                                    |
-| `disableInternalTLS`     | `false`                                                    | Disables only AutoModpack's server-side TLS termination. Clients always use TLS; an expert-provided terminator must forward decrypted traffic. |
-| `connectionMode`         | `HOLEPUNCH` on supported targets; `MAGIC_PACKET` otherwise | Selects the exact method advertised to clients and used by built-in handling. Modes do not fall back to one another.                           |
-| `updateIpsOnEveryStart`  | `false`                                                    | Updates advertisedEndpointHost on startup. Useful for dynamic residential IPs.                                                                 |
-| `validateSecrets`        | `true`                                                     | Protects downloads using unique, temporary secrets per user.                                                                                   |
-| `secretLifetime`         | `336`                                                      | How long (in hours) a download secret remains valid.                                                                                           |
-
-### Connection modes and ports
-
-| Mode           | `bindPort: -1`                                                                                                    | Explicit `bindPort`                                            |
-|----------------|-------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------|
-| `HOLEPUNCH`    | Accept only marked Minecraft Login takeover connections.                                                          | Same behavior; the configured port remains dormant.            |
-| `MAGIC_PACKET` | Require AMMH/AMOK on fresh connections to the Minecraft port. Non-magic traffic continues to Minecraft unchanged. | Start a dedicated listener that requires AMMH/AMOK before TLS. |
-| `DIRECT`       | Start no built-in listener. The advertised endpoint must be handled externally.                                   | Start a dedicated listener that expects TLS immediately.       |
-
-`HOLEPUNCH`, `MAGIC_PACKET`, and `DIRECT` are strict. A client uses only the advertised mode, and the server does not reinterpret a wrong-mode connection. Optional PROXY protocol metadata is accepted before dedicated `MAGIC_PACKET` and `DIRECT` connections, not on the shared Minecraft listener.
-
-Setting `modpackHost` to `false` disables all built-in listeners and holepunch handling, but it does not suppress connection information sent to clients. This supports reverse proxies and separately hosted endpoints. AutoModpack cannot validate external routing from the Minecraft server process.
-
-Clients always start TLS after the mode-specific opening. With `disableInternalTLS: true`, AutoModpack expects that TLS to have been terminated elsewhere before traffic reaches its protocol handler. This is an expert setting and does not permit plaintext client connections.
-
-On targets without built-in holepunch support, `HOLEPUNCH` is normalized, logged, and saved as `MAGIC_PACKET`. `DIRECT` is never selected automatically.
-
-## Nagging Un-modded Clients
-
-If `requireAutoModpackOnClient` is set to `false`, you can annoy (nag) players who join without the mod installed.
-
-| Setting               | Default            | Description                                     |
-|-----------------------|--------------------|-------------------------------------------------|
-| `nagUnModdedClients`  | `true`             | Enables the chat message for un-modded clients. |
-| `nagMessage`          | `"This server..."` | The main text of the warning message.           |
-| `nagClickableMessage` | `"Click here..."`  | The text that can be clicked.                   |
-| `nagClickableLink`    | URL                | The URL opened when clicking the message.       |
+AutoModpack is required on clients joining the server.

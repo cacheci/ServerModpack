@@ -239,7 +239,14 @@ public class FileInspection {
 
 		try (BufferedReader reader = Files.newBufferedReader(metaPath)) {
 			if (metaPath.toString().endsWith(".toml")) {
-				return parseTomlMetadata(reader);
+				ModMetadata metadata = parseTomlMetadata(reader);
+				if (metadata == null || metadata.version() != null) return metadata;
+				Path manifestPath = fs.getPath("/META-INF/MANIFEST.MF");
+				if (!Files.isRegularFile(manifestPath)) return metadata;
+				try (InputStream input = Files.newInputStream(manifestPath)) {
+					String version = new java.util.jar.Manifest(input).getMainAttributes().getValue("Implementation-Version");
+					return new ModMetadata(metadata.modId(), version, metadata.provides(), metadata.deps(), metadata.environment());
+				}
 			} else {
 				return parseJsonMetadata(reader);
 			}
@@ -256,7 +263,7 @@ public class FileInspection {
 			if (mods == null || mods.isEmpty()) return null;
 
 			String modId = null;
-			String version = "1";
+			String version = null;
 			Set<String> provides = new HashSet<>();
 			Set<String> deps = new HashSet<>();
 			LoaderManagerService.EnvironmentType env = LoaderManagerService.EnvironmentType.UNIVERSAL;
@@ -265,10 +272,11 @@ public class FileInspection {
 				TomlTable modTable = mods.getTable(i);
 				if (modTable == null) continue;
 
-				if (modId == null) modId = modTable.getString("modId");
-
-				String v = modTable.getString("version");
-				if (v != null && !v.equals("${file.jarVersion}")) version = v;
+				if (modId == null) {
+					modId = modTable.getString("modId");
+					String v = modTable.getString("version");
+					if (v != null && !v.equals("${file.jarVersion}")) version = v;
+				}
 
 				TomlArray prov = modTable.getArray("provides");
 				if (prov != null) for (int j = 0; j < prov.size(); j++) provides.add(prov.getString(j));

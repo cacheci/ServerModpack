@@ -293,6 +293,13 @@ public final class UpdateTransactionExecutor {
 	private void validateManifestProjection(Jsons.ModpackContentFields manifest, Map<FileKey, ProjectedFile> finalState) throws IOException {
 		for (var item : manifest.list) {
 			String relative = normalizeManifestPath(item.file);
+			if ("mod".equals(item.type)) {
+				long size = parseNonnegativeSize(item.size);
+				boolean present = finalState.values().stream().anyMatch(projected -> projected.root() == Root.MODS_DIR && projected.present()
+						&& item.sha1.equalsIgnoreCase(projected.expectedHash()) && size == projected.expectedSize());
+				if (!present) throw new IOException("Manifest file is absent from projected final state: " + relative);
+				continue;
+			}
 			ProjectedFile projected = finalState.get(new FileKey(Root.MODPACK_DIR, relative));
 			if (projected == null || !projected.present()) throw new IOException("Manifest file is absent from projected final state: " + relative);
 			if (!item.editable && (!item.sha1.equalsIgnoreCase(projected.expectedHash()) || parseNonnegativeSize(item.size) != projected.expectedSize()))

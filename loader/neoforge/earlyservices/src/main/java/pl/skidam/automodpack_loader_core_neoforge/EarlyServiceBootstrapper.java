@@ -13,7 +13,6 @@ import net.neoforged.fml.loading.progress.StartupNotificationManager;
 import net.neoforged.neoforgespi.earlywindow.GraphicsBootstrapper;
 
 import pl.skidam.automodpack_core.Constants;
-import pl.skidam.automodpack_core.utils.EarlyServiceScan;
 import pl.skidam.automodpack_loader_core.Preload;
 
 public class EarlyServiceBootstrapper implements GraphicsBootstrapper {
@@ -43,54 +42,9 @@ public class EarlyServiceBootstrapper implements GraphicsBootstrapper {
 			String launchTarget = argValue(arguments, "--launchTarget");
 			if (launchTarget != null) EARLY_IS_CLIENT = !launchTarget.toLowerCase(Locale.ROOT).contains("server");
 
-			// Run the update/reconcile step before anything below reads the modpack folder, so an
-			// update that changes which mods are early-service mods is reflected in the same boot.
-			// This also publishes Constants.selectedModpackDir / Constants.MODS_DIR.
 			ProgressMeter progress = StartupNotificationManager.prependProgressBar("[Automodpack] Preload", 0);
 			new Preload();
 			progress.complete();
-
-			// Set by Preload only when a modpack is selected on a client - null means nothing to do.
-			Path modpackMods = Constants.selectedModpackDir == null ? null : Constants.selectedModpackDir.resolve("mods");
-			if (modpackMods == null || !Files.isDirectory(modpackMods)) return;
-
-			List<Path> earlyServiceJars = EarlyServiceScan.eligibleJars(modpackMods, EarlyServiceLayer::eligibleForInPlace);
-
-			if (earlyServiceJars.isEmpty()) return;
-
-			Constants.LOGGER.info("[AutoModpack] Bootstrapping {} early-service mod(s) from the modpack folder in place", earlyServiceJars.size());
-
-			ClassLoader childLoader = appendToFmlClassLoaderChain(earlyServiceJars);
-			if (childLoader == null) {
-				// Batched append failed - e.g. one unreadable jar poisoning the whole list. Retry
-				// each jar individually so only the jars that actually fail stay out.
-				List<Path> appended = new ArrayList<>();
-				for (Path jar : earlyServiceJars) {
-					ClassLoader loader = appendToFmlClassLoaderChain(List.of(jar));
-					if (loader != null) {
-						childLoader = loader;
-						appended.add(jar);
-					}
-				}
-				earlyServiceJars = appended;
-				if (earlyServiceJars.isEmpty()) return;
-			}
-
-			EarlyServiceLayer.register(earlyServiceJars);
-
-			for (Path jar : earlyServiceJars) {
-				for (String impl : EarlyServiceLayer.serviceImpls(jar, EarlyServiceLayer.GRAPHICS_BOOTSTRAPPER_SERVICE)) {
-					try {
-						GraphicsBootstrapper bootstrapper = (GraphicsBootstrapper) Class.forName(impl, true, childLoader).getDeclaredConstructor()
-								.newInstance();
-						Constants.LOGGER.debug("[AutoModpack] Invoking in-place GraphicsBootstrapper {} ({}) from {}", impl, bootstrapper.name(),
-								jar.getFileName());
-						bootstrapper.bootstrap(arguments);
-					} catch (Throwable t) {
-						Constants.LOGGER.error("[AutoModpack] In-place GraphicsBootstrapper {} from {} failed", impl, jar.getFileName(), t);
-					}
-				}
-			}
 		} catch (Throwable t) {
 			Constants.LOGGER.error("[AutoModpack] Early-service bootstrap failed", t);
 		}

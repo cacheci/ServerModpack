@@ -52,7 +52,7 @@ import pl.skidam.automodpack.client.ui.versioned.VersionedText;
 /**
  * Adds an "Optional Mods" button to the multiplayer screen's top footer row, beside Join Server /
  * Direct Connection / Add Server, reflecting whether the highlighted server is a known AutoModpack
- * modpack with optional groups.
+ * modpack with selectable mods.
  *
  * LinearLayout only gained a way to remove children in 26.2. On that version and above, the button
  * is added to / removed from the row on each selection change and the row re-centered, so it
@@ -81,7 +81,7 @@ public abstract class JoinMultiplayerScreenMixin extends Screen {
 	private boolean automodpack$buttonInRow = false;
 	/*?}*/
 	@Unique
-	private Button automodpack$groupsButton;
+	private Button automodpack$modsButton;
 
 	protected JoinMultiplayerScreenMixin(Component title) {
 		super(title);
@@ -101,7 +101,7 @@ public abstract class JoinMultiplayerScreenMixin extends Screen {
 	*//*?}*/
 		automodpack$topRow = topFooterButtons;
 
-		automodpack$groupsButton = Button.builder(VersionedText.translatable("automodpack.selection.button"), press -> {
+		automodpack$modsButton = Button.builder(VersionedText.translatable("automodpack.selection.button"), press -> {
 			String address = automodpack$selectedServerAddress();
 			if (address != null) minecraft.gui.setScreen(ModpackSelectionScreen.forServerAddress(this, address));
 		}).width(100).build();
@@ -112,12 +112,12 @@ public abstract class JoinMultiplayerScreenMixin extends Screen {
 			if (child instanceof AbstractWidget widget) automodpack$vanillaRowButtons.add(widget);
 		});
 		automodpack$buttonInRow = false;
-		automodpack$groupsButton.visible = false;
-		addRenderableWidget(automodpack$groupsButton);
+		automodpack$modsButton.visible = false;
+		addRenderableWidget(automodpack$modsButton);
 		/*?} else {*/
 		/*
-		automodpack$groupsButton.active = false;
-		topFooterButtons.addChild(automodpack$groupsButton);
+		automodpack$modsButton.active = false;
+		topFooterButtons.addChild(automodpack$modsButton);
 		*//*?}*/
 	}
 
@@ -125,24 +125,24 @@ public abstract class JoinMultiplayerScreenMixin extends Screen {
 	// this exact method just leaves the button in its default state rather than failing to load.
 	@Inject(method = "onSelectedChange", at = @At("RETURN"), require = 0)
 	private void automodpack$onSelectedChange(CallbackInfo ci) {
-		if (automodpack$topRow == null || automodpack$groupsButton == null) return;
+		if (automodpack$topRow == null || automodpack$modsButton == null) return;
 
 		String address = automodpack$selectedServerAddress();
-		boolean show = address != null && ModpackSelectionScreen.serverHasGroupsToConfigure(address);
+		boolean show = address != null && ModpackSelectionScreen.serverHasModsToConfigure(address);
 
 		/*? if >=26.2 {*/
 		if (show == automodpack$buttonInRow) return; // Row membership already correct; avoid needless relayout.
 
 		automodpack$topRow.removeChildren();
 		for (AbstractWidget widget : automodpack$vanillaRowButtons) automodpack$topRow.addChild(widget);
-		if (show) automodpack$topRow.addChild(automodpack$groupsButton);
+		if (show) automodpack$topRow.addChild(automodpack$modsButton);
 
-		automodpack$groupsButton.visible = show;
+		automodpack$modsButton.visible = show;
 		automodpack$buttonInRow = show;
 		this.repositionElements(); // safe here: only re-arranges the layout and resizes the list
 		/*?} else {*/
 		/*
-		automodpack$groupsButton.active = show;
+		automodpack$modsButton.active = show;
 		*//*?}*/
 	}
 

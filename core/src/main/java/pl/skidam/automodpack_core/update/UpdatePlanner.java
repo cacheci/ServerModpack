@@ -58,6 +58,7 @@ public final class UpdatePlanner {
 
 		for (var entry : installedItems.entrySet()) {
 			if (targetItems.containsKey(entry.getKey())) continue;
+			if ("mod".equals(entry.getValue().type)) continue;
 			FileKey modpackKey = new FileKey(Root.MODPACK_DIR, normalize(entry.getKey()));
 			delete(operations, projected, modpackKey, null);
 			FileKey liveKey = liveKey(entry.getValue());
@@ -72,11 +73,9 @@ public final class UpdatePlanner {
 		if (isSelectionChange(input.selection(), target.modpackId)) restartReasons.add(RestartReason.SELECTED_MODPACK);
 		planPreviousEditablePreservation(input.selection(), target.modpackId, projected, operations);
 
-		Set<String> forceCopyPaths = new HashSet<>(input.forceCopyServicePaths());
-		for (var item : targetItems.values()) if (item.forceCopy) forceCopyPaths.add(normalize(item.file));
-
 		for (var item : targetItems.values()) {
 			String relative = normalize(item.file);
+			if ("mod".equals(item.type)) continue;
 			FileKey modpackKey = new FileKey(Root.MODPACK_DIR, relative);
 			FileState existing = projected.get(modpackKey);
 			boolean installedHashChanged = !hashesEqual(item.sha1, Optional.ofNullable(installedItems.get(relative)).map(old -> old.sha1).orElse(null));
@@ -85,32 +84,17 @@ public final class UpdatePlanner {
 				install(operations, projected, modpackKey, item.sha1, parseSize(item.size), "mod".equals(item.type));
 			}
 
-			boolean copyToLive = !"mod".equals(item.type) || forceCopyPaths.contains(relative);
 			FileKey liveKey = liveKey(item);
-			if (copyToLive && !preserveEditable) {
+			if (!preserveEditable) {
 				FileState live = projected.get(liveKey);
 				if (!matches(live, item.sha1, parseSize(item.size))) {
-					install(operations, projected, liveKey, item.sha1, parseSize(item.size), "mod".equals(item.type));
-					if ("mod".equals(item.type)) restartReasons.add(RestartReason.CORRECTED_FILE_LOCATIONS);
+					install(operations, projected, liveKey, item.sha1, parseSize(item.size), false);
 				}
 			}
 		}
 
 		planSelectedEditableCopies(input.selection(), target.modpackId, targetItems.values(), projected, operations);
-		planNestedCopies(input.nestedCopies(), projected, operations, restartReasons);
-		Set<String> standardModsToKeep = planDuplicates(input.targetMods(), input.standardMods(), forceCopyPaths, projected, operations, restartReasons);
-
-		for (var item : targetItems.values()) {
-			if (!"mod".equals(item.type)) continue;
-			String relative = normalize(item.file);
-			if (forceCopyPaths.contains(relative)) continue;
-			FileKey standardKey = liveKey(item);
-			FileState standard = projected.get(standardKey);
-			if (standard != null && hashesEqual(standard.sha1(), item.sha1) && !standardModsToKeep.contains(standardKey.relativePath())) {
-				delete(operations, projected, standardKey, item.sha1);
-				restartReasons.add(RestartReason.REMOVED_STANDARD_MODS);
-			}
-		}
+		planStandardMods(targetItems.values(), input.standardMods(), projected, operations, restartReasons);
 
 		List<Operation> ordered = operations.values().stream().sorted(OPERATION_ORDER).toList();
 		projectedScope.addAll(operations.keySet());
@@ -121,6 +105,34 @@ public final class UpdatePlanner {
 					: new ProjectedFile(key.root(), key.relativePath(), true, state.sha1(), state.size());
 		}).toList();
 		return new UpdatePlan(target.modpackId, ordered, finalState, input.plannedClientConfig(), timestamps, restartReasons, warnings);
+	}
+
+	private static void planStandardMods(Collection<Jsons.ModpackContentFields.ModpackContentItem> targetItems, List<ModInfo> standardMods,
+			Map<FileKey, FileState> projected, Map<FileKey, Operation> operations, EnumSet<RestartReason> restartReasons) {
+		for (var item : targetItems) {
+			if (!"mod".equals(item.type)) continue;
+			String targetName = Path.of(normalize(item.file)).getFileName().toString();
+			boolean present = false;
+			for (ModInfo standard : standardMods) {
+				if (!standard.ids().contains(item.modId)) continue;
+				FileKey oldKey = new FileKey(Root.MODS_DIR, normalize(standard.relativePath()));
+				if (hashesEqual(standard.sha1(), item.sha1)) {
+					present = true;
+				} else {
+					delete(operations, projected, oldKey, standard.sha1());
+					restartReasons.add(RestartReason.REMOVED_DUPLICATE_MODS);
+				}
+			}
+			if (present) continue;
+			FileKey targetKey = new FileKey(Root.MODS_DIR, targetName);
+			if (projected.containsKey(targetKey) && standardMods.stream()
+					.noneMatch(mod -> mod.relativePath().equals(targetName) && mod.ids().contains(item.modId)))
+				targetKey = new FileKey(Root.MODS_DIR, item.modId + "-" + item.sha1 + ".jar");
+			if (!matches(projected.get(targetKey), item.sha1, parseSize(item.size))) {
+				install(operations, projected, targetKey, item.sha1, parseSize(item.size), true);
+				restartReasons.add(RestartReason.CORRECTED_FILE_LOCATIONS);
+			}
+		}
 	}
 
 	private static boolean isSelectionChange(SelectionContext selection, String targetModpackId) {
@@ -196,64 +208,6 @@ public final class UpdatePlanner {
 		}
 	}
 
-	private static void planNestedCopies(List<NestedCopy> copies, Map<FileKey, FileState> projected, Map<FileKey, Operation> operations,
-			EnumSet<RestartReason> restartReasons) {
-		Set<String> standardIds = new HashSet<>();
-		for (NestedCopy copy : copies.stream().sorted(Comparator.comparing(NestedCopy::targetFileName)).toList()) {
-			if (copy.ids().stream().anyMatch(standardIds::contains)) continue;
-			FileKey key = new FileKey(Root.MODS_DIR, normalize(copy.targetFileName()));
-			if (!matches(projected.get(key), copy.sha1(), copy.size())) {
-				install(operations, projected, key, copy.sha1(), copy.size(), true);
-				restartReasons.add(RestartReason.FIXED_NESTED_MODS);
-			}
-			standardIds.addAll(copy.ids());
-		}
-	}
-
-	private static Set<String> planDuplicates(List<ModInfo> targetMods, List<ModInfo> standardMods, Set<String> forceCopyPaths,
-			Map<FileKey, FileState> projected, Map<FileKey, Operation> operations, EnumSet<RestartReason> restartReasons) {
-		List<ModInfo> sortedTarget = targetMods.stream().filter(mod -> projected.containsKey(new FileKey(Root.MODPACK_DIR, normalize(mod.relativePath()))))
-				.sorted(Comparator.comparing(ModInfo::relativePath)).toList();
-		List<ModInfo> sortedStandard = standardMods.stream().filter(mod -> projected.containsKey(new FileKey(Root.MODS_DIR, normalize(mod.relativePath()))))
-				.sorted(Comparator.comparing(ModInfo::relativePath)).toList();
-		Map<ModInfo, ModInfo> duplicates = new LinkedHashMap<>();
-		for (ModInfo target : sortedTarget) {
-			if (forceCopyPaths.contains(normalize(target.relativePath()))) continue;
-			sortedStandard.stream().filter(standard -> intersects(target.ids(), standard.ids())).findFirst().ifPresent(standard -> duplicates.put(target, standard));
-		}
-		Set<ModInfo> keep = new HashSet<>();
-		for (ModInfo standard : sortedStandard) if (!duplicates.containsValue(standard)) addDependencies(standard, sortedStandard, keep);
-		Set<String> idsToKeep = keep.stream().flatMap(mod -> mod.ids().stream()).collect(Collectors.toSet());
-		Set<String> pathsToKeep = keep.stream().map(mod -> normalize(mod.relativePath())).collect(Collectors.toSet());
-
-		for (var duplicate : duplicates.entrySet()) {
-			ModInfo target = duplicate.getKey();
-			ModInfo standard = duplicate.getValue();
-			FileKey oldKey = new FileKey(Root.MODS_DIR, normalize(standard.relativePath()));
-			if (target.ids().stream().anyMatch(idsToKeep::contains)) {
-				String targetName = Path.of(normalize(target.relativePath())).getFileName().toString();
-				FileKey targetKey = new FileKey(Root.MODS_DIR, targetName);
-				pathsToKeep.add(targetName);
-				if (!matches(projected.get(targetKey), target.sha1(), target.size())) {
-					install(operations, projected, targetKey, target.sha1(), target.size(), true);
-					restartReasons.add(RestartReason.REMOVED_DUPLICATE_MODS);
-				}
-				if (!oldKey.equals(targetKey)) delete(operations, projected, oldKey, standard.sha1());
-			} else {
-				delete(operations, projected, oldKey, standard.sha1());
-				restartReasons.add(RestartReason.REMOVED_DUPLICATE_MODS);
-			}
-		}
-		return pathsToKeep;
-	}
-
-	private static void addDependencies(ModInfo mod, List<ModInfo> all, Set<ModInfo> result) {
-		if (!result.add(mod)) return;
-		for (String dependency : mod.dependencies()) for (ModInfo candidate : all) {
-			if (candidate.ids().stream().anyMatch(id -> id.equalsIgnoreCase(dependency))) addDependencies(candidate, all, result);
-		}
-	}
-
 	private static Map<String, Jsons.ModpackContentFields.ModpackContentItem> sortedItems(Set<Jsons.ModpackContentFields.ModpackContentItem> items) {
 		return items.stream().sorted(Comparator.comparing(item -> normalize(item.file))).collect(Collectors.toMap(item -> normalize(item.file), Function.identity(),
 				(first, second) -> {
@@ -285,10 +239,6 @@ public final class UpdatePlanner {
 
 	private static boolean hashesEqual(String first, String second) {
 		return first != null && second != null && first.equalsIgnoreCase(second);
-	}
-
-	private static boolean intersects(Set<String> first, Set<String> second) {
-		return first.stream().anyMatch(second::contains);
 	}
 
 	private static String logicalGamePath(FileKey key) {

@@ -48,7 +48,6 @@ import pl.skidam.mcholepunch.HolepunchClient;
 import pl.skidam.mcholepunch.HolepunchConnection;
 import pl.skidam.mcholepunch.HolepunchOptions;
 import pl.skidam.mcholepunch.HolepunchRoute;
-import pl.skidam.mcholepunch.MinecraftProtocol;
 
 public class DownloadClient implements AutoCloseable {
 
@@ -148,7 +147,19 @@ public class DownloadClient implements AutoCloseable {
 		try {
 			plainSocket.setSoTimeout(10000);
 			if (connectionInfo.connectionMode == ModpackConnectionMode.MAGIC_PACKET) performMagicHandshake(plainSocket);
-			return new TlsCandidate(wrapWithTls(plainSocket, context), trustManager);
+			SSLSocket tlsSocket = wrapWithTls(plainSocket, context);
+			if (plainSocket instanceof HolepunchSocket holepunchSocket) {
+				try {
+					holepunchSocket.enableTlsTrafficCamouflage(true);
+					holepunchSocket.commitTransportUpgrade().toCompletableFuture().get(15, TimeUnit.SECONDS);
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					throw new IOException("Holepunch transport upgrade interrupted", e);
+				} catch (Exception e) {
+					throw new IOException("Holepunch transport upgrade failed", e);
+				}
+			}
+			return new TlsCandidate(tlsSocket, trustManager);
 		} catch (IOException e) {
 			closeQuietly(plainSocket);
 			throw e;
@@ -162,16 +173,19 @@ public class DownloadClient implements AutoCloseable {
 			return socket;
 		}
 
-		MinecraftProtocol minecraftProtocol;
+		int protocolVersion;
 		try {
-			minecraftProtocol = MinecraftProtocol.forMinecraftVersion(MC_VERSION);
+			protocolVersion = MinecraftProtocols.forVersion(MC_VERSION);
 		} catch (IllegalArgumentException e) {
-			throw new IOException("No mcholepunch protocol for Minecraft " + MC_VERSION, e);
+			throw new IOException("No holepunch protocol for Minecraft " + MC_VERSION, e);
 		}
 
 		try {
 			HolepunchSocket socket = new HolepunchSocket();
-			HolepunchConnection connection = HolepunchClient.connect(route.holepunchRoute(), minecraftProtocol, socket.handler(), HolepunchOptions.builder().build())
+			HolepunchOptions.Builder options = HolepunchOptions.builder();
+			if ("neoforge".equalsIgnoreCase(LOADER) || "forge".equalsIgnoreCase(LOADER))
+				options.handshakeHostSuffix(HolepunchOptions.FORGE_FML3_HANDSHAKE_HOST_SUFFIX);
+			HolepunchConnection connection = HolepunchClient.connect(route.holepunchRoute(), protocolVersion, socket.handler(), options.build())
 					.toCompletableFuture().get(15, TimeUnit.SECONDS);
 			socket.setConnection(connection);
 			return socket;

@@ -24,7 +24,7 @@ After verification, AutoModpack will ask you to confirm the modpack installation
 
 Restart your game. Your server's modpack should now be loaded, and you should be able to connect, spawning in the overworld.
 
-> #### **Note:** If you don't see your modpack mods in the `mods` folder, they are installed in `~/.minecraft/automodpack/modpacks/{your-modpack}/mods/`. This is intentional to keep mod updates clean.
+Downloaded mod JARs are installed in the client's `mods/` folder.
 
 ---
 
@@ -32,60 +32,31 @@ Restart your game. Your server's modpack should now be loaded, and you should be
 
 ### Server Config File
 
-**Location:** `~/automodpack/automodpack-server.json`
+**Location:** `config/servermodpack/server.json`
 
 **Example Configuration:**
 ```json
 {
   "modpackHost": true,
   "generateModpackOnStart": true,
-  "syncedFiles": [
-    "/mods/*.jar",
-    "/resourcepacks/*",
-    "/config/**",
-    "/shaderpacks/*",
-    "!/config/fancymenu/user_variables.db"
-  ],
-  "allowEditsInFiles": [
-    "/options.txt"
-  ],
-  "overwriteEditableFiles": [],
-  "forceCopyFilesToStandardLocation": [],
-  "autoExcludeServerSideMods": true,
-  "requireAutoModpackOnClient": true
+  "syncedModFolders": ["mods", "mods/client_recommended"],
+  "server-only-mods": ["example_server_mod"],
+  "syncedConfigs": ["config/**", "!config/fancymenu/user_variables.db"]
 }
 ```
 
 **Key Configuration Options:**
 
-- **`syncedFiles`**: List of files and folders to sync to clients. Use `*` for wildcards and `**` for recursive matching. Prefix with `!` to exclude
-- **`allowEditsInFiles`**: Files that clients can edit locally. These files are downloaded once and not updated automatically
-  - **Example:** To always update FancyMenu configs, remove `/config/**` from `allowEditsInFiles`
-  - **⚠️ Warning:** Removing `/config/**` will make ALL config files non-editable. If you only want specific config folders to be always updated, use exclusions instead:
-    ```json
-    "syncedFiles": [
-      "/config/**"
-    ],
-    "allowEditsInFiles": [
-      "/config/**",
-      "!/config/fancymenu/**"
-    ]
-    ```
-- **`overwriteEditableFiles`**: Editable files to overwrite once when their server version changes. These paths must also match `allowEditsInFiles`; otherwise they have no effect
-- **`forceCopyFilesToStandardLocation`**: Use with caution. Forces files to be copied to the standard Minecraft folders (breaks seamless updates)
+- **`syncedModFolders`**: Directories scanned recursively for mod JARs
+- **`server-only-mods`**: Mod IDs omitted from the client manifest
+- **`syncedConfigs`**: Configuration files, directories, or glob patterns to send; prefix a pattern with `!` to exclude it
 - **Other options**: See the [full configuration page](configuration/server-config) for detailed explanations of all settings
 
 ### Splitting Mods for Server and Client
 
-- **Client-side mods**: Place in `~/automodpack/host-modpack/main/mods` (e.g., visual enhancements)
-- **Server-side mods (synced)**: Place in the standard `mods` folder; they will be synced to clients
-- **Excluding server-only mods example**:
-  ```json
-  "syncedFiles": [
-    "/mods/*.jar",
-    "!/mods/lithostitched-fabric*.jar"
-  ]
-  ```
+- **Client-side mods**: Place in `mods/client_recommended` or another configured mod directory
+- **Server mods**: The standard `mods` directory is scanned by default
+- **Server-only mods**: Mods marked server-only in metadata and IDs in `server-only-mods` are omitted
 
 ---
 
@@ -93,7 +64,7 @@ Restart your game. Your server's modpack should now be loaded, and you should be
 
 AutoModpack automatically manages client configuration. When you connect to a server, AutoModpack will:
 
-- Download the modpack (mods, configs, resource packs, etc.) to `~/.minecraft/automodpack/modpacks/{modpack}/`
+- Install selected mod JARs in `mods/` and sync configured files to the game directory
 - Authenticate the modpack host using CA trust, DNSSEC AMP1, an explicit address pin, or the saved/manual fingerprint fallback
 - Ask for confirmation to install the modpack
 
@@ -105,41 +76,14 @@ After installation, restart Minecraft to load the modpack.
 
 ## Maintaining Updates
 
-- Files listed in `allowEditsInFiles` are only downloaded once and not updated. Use this for files that players should be able to customize
-- Files listed in both `allowEditsInFiles` and `overwriteEditableFiles` keep local edits until the server changes its version, then are overwritten with that new version
-- For files that must always be in sync (e.g., specific configs), ensure they are in `syncedFiles` and not in `allowEditsInFiles`
-
-**Example for FancyMenu configs:**
-```json
-"syncedFiles": [
-  "/config/fancymenu/**"
-],
-"allowEditsInFiles": [
-  "/options.txt"
-]
-```
-
-This ensures FancyMenu configs are always updated, while players can still edit their options.
-
-**Example for editable configs with server-controlled changes:**
-
-```json
-"allowEditsInFiles": [
-  "/config/**"
-],
-"overwriteEditableFiles": [
-  "/config/fancymenu/**"
-]
-```
-
-Players can edit these FancyMenu files normally. AutoModpack overwrites them only after the server changes the file's content; local changes alone never trigger an update.
+Changes in the generated mod manifest are presented through the mod selection screen. Mods already present with the same ID, version, and SHA-1 in the client's own `mods/` directory are hidden. A mod is selected by default only when a local mod has the same ID and the server version is greater by Java string comparison. Choices apply to the current game session. Run `/automodpack generate` after changing files when `generateModpackOnStart` is disabled.
 
 ---
 
 ## Troubleshooting
 
 > #### **Important:**
-> - Ensure the same version of AutoModpack is used on both server and client
+> - Ensure the first three AutoModpack version components match on server and client
 > - Make sure your server runs and is accessible without AutoModpack
 > - Check server logs for hints
 > - Read compatibility pages like [proxies](compatibility/proxies), [launchers](compatibility/launchers) and [mods](compatibility/mods) for known issues and solutions

@@ -4,13 +4,12 @@ import static pl.skidam.automodpack_core.Constants.*;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.regex.Pattern;
 
 import pl.skidam.automodpack_core.protocol.ModpackConnectionMode;
 
 public class ConfigUtils {
 
-	public static void normalizeServerConfig(Jsons.ServerConfigFieldsV3 config, boolean saveAfter) {
+	public static void normalizeServerConfig(Jsons.ServerConfigFields config, boolean saveAfter) {
 		normalizeServerConfig(config);
 		if (saveAfter) {
 			try {
@@ -21,7 +20,7 @@ public class ConfigUtils {
 		}
 	}
 
-	public static void normalizeServerConfig(Jsons.ServerConfigFieldsV3 config) {
+	public static void normalizeServerConfig(Jsons.ServerConfigFields config) {
 		if (config.connectionMode == null) config.connectionMode = ModpackConnectionMode.defaultFor(MC_VERSION, LOADER);
 		if (config.connectionMode == ModpackConnectionMode.HOLEPUNCH && !ModpackConnectionMode.isHolepunchAvailable(MC_VERSION, LOADER)) {
 			config.connectionMode = ModpackConnectionMode.MAGIC_PACKET;
@@ -30,23 +29,9 @@ public class ConfigUtils {
 
 		Map<String, String> fixedNonModpackFilesToDelete = new LinkedHashMap<>(config.nonModpackFilesToDelete.size());
 
-		String prefixPattern = "^/?automodpack/host-modpack/[^/]+/";
-		Pattern pattern = Pattern.compile(prefixPattern);
-
-		if (config.groups != null) {
-			for (var groupEntry : config.groups.entrySet()) {
-				var group = groupEntry.getValue();
-				if (group == null) {
-					LOGGER.warn("Ignored null group declaration '{}'.", groupEntry.getKey());
-					continue;
-				}
-				group.syncedFiles = normalizeSyncedFiles(group.syncedFiles, pattern);
-				group.allowEditsInFiles = normalizePathRules(group.allowEditsInFiles, "allowEditsInFiles", pattern);
-				group.overwriteEditableFiles = normalizePathRules(group.overwriteEditableFiles, "overwriteEditableFiles", pattern);
-				group.forceCopyFilesToStandardLocation = normalizePathRules(group.forceCopyFilesToStandardLocation, "forceCopyFilesToStandardLocation",
-						pattern);
-			}
-		}
+		config.syncedModFolders = normalizePaths(config.syncedModFolders);
+		config.syncedConfigs = normalizePaths(config.syncedConfigs);
+		if (config.serverOnlyMods == null) config.serverOnlyMods = Set.of();
 
 		for (var entry : config.nonModpackFilesToDelete.entrySet()) {
 			var file = entry.getKey();
@@ -60,60 +45,15 @@ public class ConfigUtils {
 				LOGGER.warn("Ignored empty key in nonModpackFilesToDelete.");
 				continue;
 			}
-			var fixed = pattern.matcher(trimmed).replaceFirst("");
-			if (!fixed.equals(trimmed)) {
-				LOGGER.info("Normalized nonModpackFilesToDelete entry: '{}' -> '{}'. Removed '/automodpack/host-modpack/' prefix.", file, fixed);
-			}
-			fixedNonModpackFilesToDelete.put(prefixSlash(fixed), hash);
+			fixedNonModpackFilesToDelete.put(prefixSlash(trimmed), hash);
 		}
 
 		config.nonModpackFilesToDelete = fixedNonModpackFilesToDelete;
 	}
 
-	private static Set<String> normalizeSyncedFiles(Set<String> syncedFiles, Pattern hostModpackPattern) {
-		if (syncedFiles == null || syncedFiles.isEmpty()) return new LinkedHashSet<>();
-
-		Set<String> fixedSyncedFiles = new LinkedHashSet<>(syncedFiles.size());
-		for (var file : syncedFiles) {
-			if (file == null) {
-				LOGGER.warn("Ignored null entry in syncedFiles.");
-				continue;
-			}
-			var trimmed = file.trim();
-			if (trimmed.isEmpty()) {
-				LOGGER.warn("Ignored empty entry in syncedFiles.");
-				continue;
-			}
-			if (hostModpackPattern.matcher(trimmed).find()) {
-				LOGGER.info("Removed redundant syncedFiles entry '{}': paths under '/automodpack/host-modpack/' are implicitly synced.", file);
-			} else {
-				fixedSyncedFiles.add(prefixSlash(file));
-			}
-		}
-		return fixedSyncedFiles;
-	}
-
-	private static Set<String> normalizePathRules(Set<String> files, String configKey, Pattern hostModpackPattern) {
-		if (files == null || files.isEmpty()) return new LinkedHashSet<>();
-
-		Set<String> normalizedFiles = new LinkedHashSet<>(files.size());
-		for (var file : files) {
-			if (file == null) {
-				LOGGER.warn("Ignored null entry in {}.", configKey);
-				continue;
-			}
-			var trimmed = file.trim();
-			if (trimmed.isEmpty()) {
-				LOGGER.warn("Ignored empty entry in {}.", configKey);
-				continue;
-			}
-			var fixed = hostModpackPattern.matcher(trimmed).replaceFirst("");
-			if (!fixed.equals(trimmed)) {
-				LOGGER.info("Normalized {} entry: '{}' -> '{}'. Removed '/automodpack/host-modpack/' prefix.", configKey, file, fixed);
-			}
-			normalizedFiles.add(prefixSlash(fixed));
-		}
-		return normalizedFiles;
+	private static List<String> normalizePaths(List<String> paths) {
+		if (paths == null) return List.of();
+		return paths.stream().filter(Objects::nonNull).map(String::trim).filter(path -> !path.isEmpty()).distinct().toList();
 	}
 
 	public static String prefixSlash(String path) {

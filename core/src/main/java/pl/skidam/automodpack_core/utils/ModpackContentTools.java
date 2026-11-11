@@ -5,10 +5,15 @@ import static pl.skidam.automodpack_core.Constants.*;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import pl.skidam.automodpack_core.config.ConfigTools;
 import pl.skidam.automodpack_core.config.Jsons;
@@ -28,11 +33,62 @@ public class ModpackContentTools {
 	/** Checks the complete server manifest against both the installed manifest and files on disk. */
 	public static boolean hasLocalFileDifferences(Jsons.ModpackContentFields server, Jsons.ModpackContentFields installed, Path modpackDir) {
 		if (hasSha1Differences(server, installed)) return true;
+		Set<String> localMods = localModFingerprints();
 		for (var item : server.list) {
+			if ("mod".equals(item.type) && item.modId != null && item.modVersion != null) {
+				if (!localMods.contains(item.modId + "\0" + item.modVersion + "\0" + item.sha1)) return true;
+				continue;
+			}
 			Path path = SmartFileUtils.getPath(modpackDir, item.file);
 			if (!Files.isRegularFile(path) || item.sha1 == null || !item.sha1.equalsIgnoreCase(HashUtils.getHash(path))) return true;
 		}
 		return false;
+	}
+
+	/** Mod IDs whose ID, version, and SHA-1 match a JAR in the client's own mods directory. */
+	public static Set<String> matchingClientModIds(Jsons.ModpackContentFields content) {
+		Set<String> matches = new HashSet<>();
+		if (content == null || content.list == null) return matches;
+		Set<String> localMods = new HashSet<>();
+		clientMods().forEach(mod -> localMods.add(mod.modId() + "\0" + mod.version() + "\0" + mod.sha1()));
+		for (var item : content.list) {
+			if ("mod".equals(item.type) && item.modId != null && item.modVersion != null && item.sha1 != null
+					&& localMods.contains(item.modId + "\0" + item.modVersion + "\0" + item.sha1)) matches.add(item.modId);
+		}
+		return matches;
+	}
+
+	public record ClientModInfo(String modId, String version, String sha1) {}
+
+	/** Mod metadata from JARs in the client's own mods directory. */
+	public static List<ClientModInfo> clientMods() {
+		return modsInDirectory(MODS_DIR == null ? SmartFileUtils.CWD.resolve("mods") : MODS_DIR);
+	}
+
+	private static Set<String> localModFingerprints() {
+		return fingerprintsInDirectory(MODS_DIR == null ? SmartFileUtils.CWD.resolve("mods") : MODS_DIR);
+	}
+
+	private static Set<String> fingerprintsInDirectory(Path directory) {
+		Set<String> fingerprints = new HashSet<>();
+		modsInDirectory(directory).forEach(mod -> fingerprints.add(mod.modId() + "\0" + mod.version() + "\0" + mod.sha1()));
+		return fingerprints;
+	}
+
+	private static List<ClientModInfo> modsInDirectory(Path directory) {
+		List<ClientModInfo> mods = new ArrayList<>();
+		if (!Files.isDirectory(directory)) return mods;
+		try (Stream<Path> files = Files.list(directory)) {
+			files.filter(Files::isRegularFile).filter(path -> path.toString().endsWith(".jar")).sorted().forEach(file -> {
+				String id = FileInspection.getModID(file);
+				String version = FileInspection.getModVersion(file);
+				String sha1 = HashUtils.getHash(file);
+				if (id != null && version != null && sha1 != null) mods.add(new ClientModInfo(id, version, sha1));
+			});
+		} catch (IOException e) {
+			LOGGER.warn("Failed to inspect local mods in {}", directory, e);
+		}
+		return mods;
 	}
 
 	private static Map<String, String> fileHashes(Jsons.ModpackContentFields content) {
@@ -70,14 +126,7 @@ public class ModpackContentTools {
 	}
 
 	public static Optional<Path> getModpackContentFile(Path modpackDir) {
-		if (!Files.exists(modpackDir)) return Optional.empty();
-
-		Path path = modpackDir.getParent().resolve(hostModpackContentFile.getFileName()); // server
-		if (!Files.exists(path)) {
-			path = modpackDir.resolve(hostModpackContentFile.getFileName()); // client
-			if (!Files.exists(path)) return Optional.empty();
-		}
-
-		return Optional.of(path);
+		Path clientCopy = modpackDir.resolve(hostModpackContentFile.getFileName());
+		return Files.isRegularFile(clientCopy) ? Optional.of(clientCopy) : Optional.empty();
 	}
 }

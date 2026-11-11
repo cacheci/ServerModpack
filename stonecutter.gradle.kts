@@ -160,6 +160,25 @@ val selectedTargets =
 	}
 
 val releaseMatrixFile = layout.buildDirectory.file("ci/release-matrix.json")
+val protocolTableFile = file("core/src/main/resources/mc-protocols.json")
+val checkHolepunchProtocols =
+	tasks.register("checkHolepunchProtocols") {
+		group = "verification"
+		inputs.file(protocolTableFile)
+		inputs.property("targets", availableTargets)
+		doLast {
+			val declared =
+				availableTargets
+					.flatMap { target -> structuredString(target.substringBeforeLast('-'), "publish_versions").split('\n') }
+					.filter(String::isNotBlank)
+					.toSet()
+			val protocols = ObjectMapper().readTree(protocolTableFile)
+			val packed = protocols.fieldNames().asSequence().toSet()
+			require(packed == declared) { "Holepunch protocol versions differ from published Minecraft versions: missing ${declared - packed}, extra ${packed - declared}" }
+			require(packed.all { protocols[it].isInt }) { "Holepunch protocol numbers must be integers" }
+		}
+	}
+tasks.matching { it.name == "build" }.configureEach { dependsOn(checkHolepunchProtocols) }
 
 val writeReleaseMatrix =
 	tasks.register("writeReleaseMatrix") {
@@ -197,6 +216,7 @@ tasks.register("buildTargets") {
 	group = "build"
 	description = "Builds the selected AutoModpack targets and writes their release metadata."
 	dependsOn(selectedTargets.map { ":$it:build" })
+	dependsOn(checkHolepunchProtocols)
 	dependsOn(writeReleaseMatrix)
 }
 

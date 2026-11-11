@@ -14,7 +14,8 @@ public final class UriOpener {
 	public static void openUri(String uri) {
 		try {
 			URI location = URI.create(uri);
-			String[] command = PlatformUtils.IS_WIN ? new String[]{"rundll32", "url.dll,FileProtocolHandler", location.toString()}
+			String[] command = PlatformUtils.IS_WIN
+					? new String[]{"rundll32", "url.dll,FileProtocolHandler", location.toString()}
 					: PlatformUtils.IS_MAC ? new String[]{"open", location.toString()} : new String[]{"xdg-open", location.toString()};
 			Process process = Runtime.getRuntime().exec(command);
 			process.getInputStream().close();

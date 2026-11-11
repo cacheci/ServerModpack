@@ -10,14 +10,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import io.netty.channel.Channel;
 
 import pl.skidam.automodpack_core.protocol.ModpackConnectionMode;
+import pl.skidam.automodpack_core.protocol.ServerHolepunchBridge;
 import pl.skidam.automodpack_core.protocol.netty.handler.ProtocolServerHandler;
+import pl.skidam.automodpack.init.Common;
+import pl.skidam.mcholepunch.server.netty.NettyLoginClaimHandler;
 
 @Mixin(targets = "net/minecraft/server/network/ServerConnectionListener$1", priority = 2137)
 public abstract class ServerNetworkIoMixin {
 
 	@Inject(method = "initChannel", at = @At("TAIL"))
 	private void injectAutoModpackHost(Channel channel, CallbackInfo ci) {
-		if (hostServer == null || !hostServer.isSharedMagicEnabled()) return;
-		channel.pipeline().addFirst(MOD_ID, new ProtocolServerHandler(hostServer, ModpackConnectionMode.MAGIC_PACKET, true));
+		if (hostServer != null && hostServer.isSharedMagicEnabled()) {
+			channel.pipeline().addFirst(MOD_ID, new ProtocolServerHandler(hostServer, ModpackConnectionMode.MAGIC_PACKET, true));
+		} else if (Common.server != null && ServerHolepunchBridge.isRegistered()) {
+			NettyLoginClaimHandler.install(channel.pipeline(), Common.server.getKeyPair());
+		}
 	}
 }

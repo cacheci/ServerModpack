@@ -69,9 +69,8 @@ public class NettyServer {
 	}
 
 	public void setPaths(ObservableMap<String, Path> paths) {
+		this.paths.clear();
 		this.paths.putAll(paths.getMap());
-		paths.addOnPutCallback(this.paths::put);
-		paths.addOnRemoveCallback(this.paths::remove);
 	}
 
 	public void removePaths(ObservableMap<String, Path> paths) {
@@ -111,6 +110,7 @@ public class NettyServer {
 
 			if (connectionMode == ModpackConnectionMode.HOLEPUNCH) {
 				LOGGER.info("Hosting modpack through Minecraft Login holepunch; bindPort is not used");
+				new TrafficShaper(null);
 				ServerHolepunchBridge.register(this);
 				return Optional.empty();
 			}

@@ -3,28 +3,25 @@ package pl.skidam.automodpack_core.protocol;
 import static pl.skidam.automodpack_core.Constants.*;
 import static pl.skidam.automodpack_core.protocol.NetUtils.*;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.SocketAddress;
-import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
-import java.time.Duration;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.ByteToMessageDecoder;
+import io.netty.handler.codec.MessageToMessageEncoder;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedWriteHandler;
-import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.automodpack_core.protocol.compression.CompressionType;
 import pl.skidam.automodpack_core.protocol.netty.NettyServer;
+import pl.skidam.automodpack_core.protocol.netty.TrafficShaper;
 import pl.skidam.automodpack_core.protocol.netty.handler.CompressionDecoder;
 import pl.skidam.automodpack_core.protocol.netty.handler.CompressionEncoder;
 import pl.skidam.automodpack_core.protocol.netty.handler.ConfigurationHandler;
@@ -32,74 +29,17 @@ import pl.skidam.automodpack_core.protocol.netty.handler.ErrorPrinter;
 import pl.skidam.automodpack_core.protocol.netty.handler.ProtocolMessageDecoder;
 import pl.skidam.automodpack_core.protocol.netty.handler.ServerMessageHandler;
 import pl.skidam.mcholepunch.HolepunchConnection;
-import pl.skidam.mcholepunch.HolepunchFailure;
-import pl.skidam.mcholepunch.HolepunchHandler;
-import pl.skidam.mcholepunch.MinecraftProtocol;
-import pl.skidam.mcholepunch.minecraft.HolepunchServerRegistry;
+import pl.skidam.mcholepunch.server.netty.NettyChannelRegistry;
 
 public final class ServerHolepunchBridge {
-	private static final int EVENT_LOOP_TICK_MILLIS = 10;
-	private static final int MAX_PUMP_PASSES = 1024;
-	private static final Set<HolepunchSocket> sockets = ConcurrentHashMap.newKeySet();
-	private static ExecutorService executor;
-	private static HolepunchServerRegistry.Registration registration;
+	private static final Set<Channel> channels = ConcurrentHashMap.newKeySet();
+	private static NettyChannelRegistry.Registration registration;
 
 	private ServerHolepunchBridge() {}
 
 	public static synchronized void register(NettyServer server) {
 		if (!serverConfig.modpackHost || serverConfig.connectionMode != ModpackConnectionMode.HOLEPUNCH || registration != null) return;
-
-		ExecutorService bridgeExecutor = Executors.newCachedThreadPool(runnable -> {
-			Thread thread = new Thread(runnable, "mcholepunch-automodpack-handler");
-			thread.setDaemon(true);
-			return thread;
-		});
-		executor = bridgeExecutor;
-		try {
-			registration = HolepunchServerRegistry.register(
-					MinecraftProtocol.forMinecraftVersion(MC_VERSION).loginPacketLayout(),
-					bridgeExecutor,
-					4L * 1024 * 1024,
-					Duration.ofSeconds(10),
-					(username, address, marker) -> new HolepunchHandler() {
-						private volatile HolepunchSocket socket;
-
-						@Override
-						public void onOpen(HolepunchConnection connection) {
-							LOGGER.debug("Holepunched AutoModpack connection opened: {}", address);
-							HolepunchSocket openedSocket = new HolepunchSocket(connection);
-							socket = openedSocket;
-							sockets.add(openedSocket);
-							try {
-								bridgeExecutor.execute(() -> runProtocol(server, openedSocket, address));
-							} catch (RuntimeException e) {
-								sockets.remove(openedSocket);
-								openedSocket.close();
-								throw e;
-							}
-						}
-
-						@Override
-						public void onRead(ByteBuffer data) {
-							HolepunchSocket openedSocket = socket;
-							if (openedSocket == null) return;
-							byte[] bytes = new byte[data.remaining()];
-							data.get(bytes);
-							openedSocket.feedReadData(bytes);
-						}
-
-						@Override
-						public void onClosed(HolepunchFailure failure) {
-							LOGGER.debug("Holepunched AutoModpack connection closed: {} ({})", address, failure);
-							HolepunchSocket openedSocket = socket;
-							if (openedSocket != null) openedSocket.close();
-						}
-					});
-		} catch (RuntimeException e) {
-			bridgeExecutor.shutdownNow();
-			executor = null;
-			throw e;
-		}
+		registration = NettyChannelRegistry.register(maxPendingWriteBytes(), (channel, connection) -> install(server, channel, connection));
 	}
 
 	public static synchronized boolean isRegistered() {
@@ -111,112 +51,128 @@ public final class ServerHolepunchBridge {
 			registration.close();
 			registration = null;
 		}
-		for (HolepunchSocket socket : sockets) {
-			socket.close();
-		}
-		sockets.clear();
-		if (executor != null) {
-			executor.shutdownNow();
-			executor = null;
-		}
+		for (Channel channel : channels) channel.close();
+		channels.clear();
 	}
 
-	private static void runProtocol(NettyServer server, HolepunchSocket socket, SocketAddress remoteAddress) {
-		EmbeddedChannel channel = null;
-		try (
-				socket;
-				DataInputStream input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-				DataOutputStream output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()))) {
-			channel = new EmbeddedChannel();
-			channel.attr(NettyServer.REAL_REMOTE_ADDR).set(remoteAddress);
-			channel.attr(NettyServer.PROTOCOL_VERSION).set(LATEST_SUPPORTED_PROTOCOL_VERSION);
-			channel.attr(NettyServer.COMPRESSION_TYPE).set(CompressionType.ZSTD);
-			channel.attr(NettyServer.CHUNK_SIZE).set(DEFAULT_CHUNK_SIZE);
-
-			channel.pipeline().addLast("error-printer-first", new ErrorPrinter());
-			if (server.getSslCtx() != null) {
-				SslHandler sslHandler = server.getSslCtx().newHandler(channel.alloc());
-				sslHandler.handshakeFuture().addListener(future -> {
-					if (future.isSuccess()) {
-						LOGGER.debug("TLS handshake completed via holepunch: {}", remoteAddress);
-					} else {
-						LOGGER.debug("TLS handshake failed via holepunch: {}", remoteAddress, future.cause());
-					}
+	private static void install(NettyServer server, Channel channel, HolepunchConnection connection) throws Exception {
+		SocketAddress remoteAddress = channel.remoteAddress();
+		channels.add(channel);
+		channel.closeFuture().addListener(future -> channels.remove(channel));
+		ChannelPipeline pipeline = channel.pipeline();
+		pipeline.addLast("holepunch-camouflage-encoder", new CamouflageEncoder(connection));
+		pipeline.addLast("holepunch-camouflage-decoder", new CamouflageDecoder(connection));
+		pipeline.addLast("error-printer-first", new ErrorPrinter());
+		pipeline.addLast("traffic-shaper", TrafficShaper.trafficShaper.getTrafficShapingHandler());
+		if (server.getSslCtx() != null) {
+			SslHandler tls = server.getSslCtx().newHandler(channel.alloc());
+			pipeline.addLast("tls", tls);
+			tls.handshakeFuture().addListener(future -> {
+				if (future.isSuccess()) connection.commitTransportUpgrade().exceptionally(error -> {
+					LOGGER.error("Holepunch transport upgrade failed for {}", remoteAddress, error);
+					channel.close();
+					return null;
 				});
-				channel.pipeline().addLast("tls", sslHandler);
-			} else {
-				LOGGER.debug("TLS termination handled externally for holepunch connection: {}", remoteAddress);
-			}
-
-			channel.pipeline()
-					.addLast("configuration", new ConfigurationHandler())
-					.addLast("compression-encoder", new CompressionEncoder())
-					.addLast("compression-decoder", new CompressionDecoder())
-					.addLast("chunked-write", new ChunkedWriteHandler())
-					.addLast("protocol-msg-decoder", new ProtocolMessageDecoder())
-					.addLast("msg-handler", new ServerMessageHandler(server))
-					.addLast("error-printer-last", new ErrorPrinter());
-
-			socket.setSoTimeout(EVENT_LOOP_TICK_MILLIS);
-			byte[] readBuffer = new byte[8192];
-
-			for (;;) {
-				try {
-					int read = input.read(readBuffer);
-					if (read == -1) break;
-
-					ByteBuf inbound = channel.alloc().buffer(read);
-					inbound.writeBytes(readBuffer, 0, read);
-					channel.writeInbound(inbound);
-				} catch (SocketTimeoutException ignored) {
-					// The timeout is the event-loop tick while the peer waits for output.
-				}
-
-				pumpEmbeddedChannel(channel, output);
-			}
-
-			pumpEmbeddedChannel(channel, output);
-		} catch (Exception e) {
-			LOGGER.debug("AutoModpack holepunch handler ended", e);
-		} finally {
-			sockets.remove(socket);
-			if (channel != null) channel.finishAndReleaseAll();
+			});
 		}
+		channel.attr(NettyServer.REAL_REMOTE_ADDR).set(remoteAddress);
+		channel.attr(NettyServer.PROTOCOL_VERSION).set(LATEST_SUPPORTED_PROTOCOL_VERSION);
+		channel.attr(NettyServer.COMPRESSION_TYPE).set(CompressionType.ZSTD);
+		channel.attr(NettyServer.CHUNK_SIZE).set(DEFAULT_CHUNK_SIZE);
+		pipeline.addLast("configuration-handler", new ConfigurationHandler())
+				.addLast("compression-encoder", new CompressionEncoder())
+				.addLast("compression-decoder", new CompressionDecoder())
+				.addLast("chunked-write", new ChunkedWriteHandler())
+				.addLast("protocol-msg-decoder", new ProtocolMessageDecoder())
+				.addLast("msg-handler", new ServerMessageHandler(server))
+				.addLast("error-printer-last", new ErrorPrinter());
+		LOGGER.debug("AutoModpack holepunch connection handed over: {}", remoteAddress);
 	}
 
-	static void pumpEmbeddedChannel(EmbeddedChannel channel, DataOutputStream output) throws IOException {
-		boolean producedOutput = false;
+	/** Forwards decrypted transport-frame payloads before the handoff and decodes camouflaged TLS records after it. */
+	static final class CamouflageDecoder extends ByteToMessageDecoder {
+		private final HolepunchConnection connection;
+		private final TlsRecordCamouflage.Pair camouflage;
 
-		for (int pass = 0; pass < MAX_PUMP_PASSES; pass++) {
-			channel.runPendingTasks();
-			channel.flushOutbound();
-			channel.runPendingTasks();
-			channel.checkException();
-
-			boolean drained = drainOutbound(channel, output);
-			producedOutput |= drained;
-			if (!drained) break;
+		CamouflageDecoder(HolepunchConnection connection) throws Exception {
+			this.connection = connection;
+			this.camouflage = TlsRecordCamouflage.create(connection.transportSecret(), false);
 		}
 
-		if (producedOutput) output.flush();
-	}
-
-	private static boolean drainOutbound(EmbeddedChannel channel, DataOutputStream output) throws IOException {
-		boolean producedOutput = false;
-		Object message;
-
-		while ((message = channel.readOutbound()) != null) {
-			producedOutput = true;
+		@Override
+		protected void decode(ChannelHandlerContext context, ByteBuf input, List<Object> output) throws IOException {
+			if (!connection.isRaw()) {
+				output.add(input.readRetainedSlice(input.readableBytes()));
+				return;
+			}
+			ByteBuf decoded = context.alloc().ioBuffer(input.readableBytes() + camouflage.inbound().pendingRecordLength());
+			ByteBuffer view = decoded.nioBuffer(0, decoded.capacity());
 			try {
-				if (!(message instanceof ByteBuf buffer)) {
-					throw new IOException("Unexpected outbound message type: " + message.getClass().getName());
-				}
-				buffer.readBytes(output, buffer.readableBytes());
-			} finally {
-				ReferenceCountUtil.release(message);
+				camouflage.inbound().decode(readableView(input), view);
+			} catch (IOException exception) {
+				// Malformed input kills the connection, but the pipeline's error path cannot release this
+				// method's local, so the buffer goes back first or every hostile frame leaks one.
+				decoded.release();
+				throw exception;
 			}
+			if (view.position() == 0) {
+				decoded.release();
+				return;
+			}
+			decoded.writerIndex(view.position());
+			output.add(decoded);
+		}
+	}
+
+	/** Passes handshake-era records through and encodes post-handoff records as camouflage frames the peer's pipeline decodes. */
+	static final class CamouflageEncoder extends MessageToMessageEncoder<ByteBuf> {
+		private final HolepunchConnection connection;
+		private final TlsRecordCamouflage.Pair camouflage;
+
+		CamouflageEncoder(HolepunchConnection connection) throws Exception {
+			this.connection = connection;
+			this.camouflage = TlsRecordCamouflage.create(connection.transportSecret(), false);
 		}
 
-		return producedOutput;
+		@Override
+		protected void encode(ChannelHandlerContext context, ByteBuf message, List<Object> output) throws IOException {
+			if (!connection.isRaw()) {
+				output.add(message.retain());
+				return;
+			}
+			// The SslHandler writes one TLS record per message, so one frame header of expansion
+			// plus whatever partial record the encoder still holds is the whole bound.
+			ByteBuf encoded = context.alloc().ioBuffer(message.readableBytes() + camouflage.outbound().pendingRecordLength() + TlsRecordCamouflage.FRAME_HEADER_LENGTH);
+			ByteBuffer view = encoded.nioBuffer(0, encoded.capacity());
+			try {
+				camouflage.outbound().encode(readableView(message), view);
+			} catch (IOException exception) {
+				encoded.release();
+				throw exception;
+			}
+			if (view.position() == 0) {
+				encoded.release();
+				return;
+			}
+			encoded.writerIndex(view.position());
+			output.add(encoded);
+		}
+	}
+
+	/** A readable view of the buffer for the camouflage codec, zero-copy when the buffer exposes one backing NIO buffer. */
+	private static ByteBuffer readableView(ByteBuf buffer) {
+		if (buffer.nioBufferCount() == 1) {
+			ByteBuffer view = buffer.nioBuffer();
+			buffer.skipBytes(buffer.readableBytes());
+			return view;
+		}
+		byte[] bytes = new byte[buffer.readableBytes()];
+		buffer.readBytes(bytes);
+		return ByteBuffer.wrap(bytes);
+	}
+
+	/** Bounds pending output on a claimed Minecraft connection. */
+	private static long maxPendingWriteBytes() {
+		return 4L * 1024 * 1024 + TlsRecordCamouflage.MAX_RECORD_LENGTH + TlsRecordCamouflage.FRAME_HEADER_LENGTH;
 	}
 }

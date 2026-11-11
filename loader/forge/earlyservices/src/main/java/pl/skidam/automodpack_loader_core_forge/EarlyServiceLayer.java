@@ -42,7 +42,6 @@ import net.minecraftforge.forgespi.locating.IModFile;
 
 import pl.skidam.automodpack_core.Constants;
 import pl.skidam.automodpack_core.loader.LoaderServicePaths;
-import pl.skidam.automodpack_core.utils.EarlyServiceScan;
 import pl.skidam.automodpack_core.utils.FileInspection;
 import pl.skidam.automodpack_loader_core_modlauncher.EarlyServiceBridgePlugin;
 import pl.skidam.automodpack_loader_core_modlauncher.ModuleClassLoaderAccess;
@@ -139,7 +138,6 @@ public final class EarlyServiceLayer {
 	private static final Map<Path, List<ITransformationService>> TRANSFORMATION_SERVICES = new ConcurrentHashMap<>();
 
 	// bootstrap() must run exactly once; EarlyModLocator#scanMods() can be invoked more than once.
-	private static final AtomicBoolean BOOTSTRAPPED = new AtomicBoolean(false);
 
 	// The GAME-layer bridge must run exactly once, before Mixin loads any outer class.
 	private static final AtomicBoolean GAME_BRIDGE_DONE = new AtomicBoolean(false);
@@ -149,55 +147,6 @@ public final class EarlyServiceLayer {
 	// ANY package we routed away from GAME, regardless of which child loader owns it - otherwise
 	// GAME -> childA -> (fallback) -> GAME -> childB could still ping-pong.
 	private static final Set<String> BRIDGED_PACKAGES = ConcurrentHashMap.newKeySet();
-
-	/**
-	 * Builds one shared child SERVICE layer for every eligible modpack-folder early-service jar,
-	 * registers it, instantiates each jar's declared {@code ITransformationService}(s) (forwarded
-	 * lazily by {@link AutoModpackTransformationService}), and replays each jar's candidate/dependency
-	 * locators so their real (inner) mods are discovered. Idempotent - safe to call from every
-	 * {@link EarlyModLocator#scanMods} invocation.
-	 */
-	public static void bootstrap() {
-		if (!BOOTSTRAPPED.compareAndSet(false, true)) return;
-
-		try {
-			// selectedModpackDir is published by Preload (run just before this) and set only when a
-			// modpack is selected on a client.
-			Path modpackMods = Constants.selectedModpackDir == null ? null : Constants.selectedModpackDir.resolve("mods");
-			if (modpackMods == null || !Files.isDirectory(modpackMods)) return;
-
-			List<Path> earlyServiceJars = EarlyServiceScan.eligibleJars(modpackMods, EarlyServiceLayer::eligibleForInPlace);
-
-			if (earlyServiceJars.isEmpty()) return;
-
-			Constants.LOGGER.info("[AutoModpack] Bootstrapping {} early-service mod(s) from the modpack folder in place", earlyServiceJars.size());
-
-			ModuleLayer serviceLayer = EarlyServiceLayer.class.getModule().getLayer();
-			if (serviceLayer == null) {
-				LOGGER.warn("[AutoModpack] Not running on a module layer, cannot bootstrap early services in place");
-				return;
-			}
-
-			buildChildLayer(earlyServiceJars, serviceLayer);
-
-			for (Path jar : earlyServiceJars) {
-				for (String impl : serviceImpls(jar, TRANSFORMATION_SERVICE)) {
-					try {
-						ITransformationService service = (ITransformationService) Class.forName(impl, true, classLoaderFor(jar)).getDeclaredConstructor()
-								.newInstance();
-						TRANSFORMATION_SERVICES.computeIfAbsent(jar, k -> new ArrayList<>()).add(service);
-						LOGGER.debug("[AutoModpack] Instantiated in-place transformation service {} ({})", impl, jar.getFileName());
-					} catch (Throwable t) {
-						LOGGER.error("[AutoModpack] Failed to instantiate in-place transformation service {} from {}", impl, jar.getFileName(), t);
-					}
-				}
-			}
-
-			EarlyServiceBridgePlugin.ensureRunsFirst(EarlyServiceLayer::bridgeEarlyServicesToGameLayer);
-		} catch (Throwable t) {
-			LOGGER.error("[AutoModpack] Early-service bootstrap failed", t);
-		}
-	}
 
 	/**
 	 * Resolves every eligible jar into ONE shared child configuration/layer/classloader, mirroring

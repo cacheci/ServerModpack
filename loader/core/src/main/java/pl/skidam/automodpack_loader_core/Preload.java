@@ -15,7 +15,6 @@ import pl.skidam.automodpack_core.config.BootstrapConfig;
 import pl.skidam.automodpack_core.config.ConfigTools;
 import pl.skidam.automodpack_core.config.ConfigUtils;
 import pl.skidam.automodpack_core.config.Jsons;
-import pl.skidam.automodpack_core.config.ServerConfigMigration;
 import pl.skidam.automodpack_core.loader.LoaderManagerService;
 import pl.skidam.automodpack_core.modpack.ModpackId;
 import pl.skidam.automodpack_core.protocol.DownloadClient;
@@ -28,7 +27,6 @@ import pl.skidam.automodpack_loader_core.client.CertificateTrustStore;
 import pl.skidam.automodpack_loader_core.client.ModpackUpdater;
 import pl.skidam.automodpack_loader_core.client.ModpackUtils;
 import pl.skidam.automodpack_loader_core.loader.LoaderManager;
-import pl.skidam.automodpack_loader_core.mods.ModpackLoader;
 import pl.skidam.automodpack_loader_core.utils.UpdateType;
 
 public class Preload {
@@ -43,7 +41,6 @@ public class Preload {
 			DetachedUpdateHelper.cleanupOldHelperJars();
 			recoverPendingTransaction();
 			if (LOADER_MANAGER.getEnvironmentType() == LoaderManagerService.EnvironmentType.CLIENT) {
-				LegacyDummyCleanup.migrate();
 				importBootstrap();
 			}
 			updateAll();
@@ -138,15 +135,9 @@ public class Preload {
 			LOGGER.info("No saved secret for seeded/selected origin {}; using an anonymous preload secret", AddressHelpers.formatAddress(storedConnectionInfo.origin));
 		}
 
-		// When update-on-launch is disabled, just load the already-installed
-		// modpack: don't contact the server and don't reconcile local files,
-		// so the user can freely add/remove mods (e.g. a binary search).
+		// Keep locally installed mods when launch updates are disabled.
 		if (!clientConfig.updateSelectedModpackOnLaunch) {
-			if (Files.isDirectory(selectedModpackDir)) {
-				loadLocalModpack(connectionInfo, secret);
-			} else {
-				SelfUpdater.update();
-			}
+			SelfUpdater.update();
 			return;
 		}
 
@@ -159,7 +150,6 @@ public class Preload {
 			if (!Objects.equals(clientConfig.selectedModpackId, latestModpackContent.modpackId)) {
 				LOGGER.error("Selected modpack manifest changed ID from {} to {}", clientConfig.selectedModpackId, latestModpackContent.modpackId);
 				downloadClient.close();
-				loadLocalModpack(connectionInfo, secret);
 				return;
 			}
 			selectedModpackDir = ModpackUtils.getModpackPath(latestModpackContent.modpackId);
@@ -172,27 +162,17 @@ public class Preload {
 		new ModpackUpdater(latestModpackContent, connectionInfo, secret, selectedModpackDir, downloadClient).processModpackUpdate(null);
 	}
 
-	private void loadLocalModpack(Jsons.ConnectionInfo connectionInfo, Secrets.Secret secret) {
-		var localModpackContent = ModpackContentTools.read(selectedModpackDir.resolve(hostModpackContentFile.getFileName()));
-		try {
-			new ModpackUpdater(localModpackContent, connectionInfo, secret, selectedModpackDir).loadModpack();
-		} catch (Exception e) {
-			LOGGER.error("Failed to load local modpack", e);
-		}
-	}
-
 	private void initializeConstants() {
 		// Initialize global variables
 		preload = true;
 		PRELOAD_TIME = System.currentTimeMillis();
 		LOADER_MANAGER = new LoaderManager();
-		MODPACK_LOADER = new ModpackLoader();
 		MC_VERSION = LOADER_MANAGER.getModVersion("minecraft");
 		LOADER_VERSION = LOADER_MANAGER.getLoaderVersion();
 		LOADER = LOADER_MANAGER.getPlatformType().toString().toLowerCase(Locale.ROOT);
 		THIS_MOD_JAR = JarUtils.getJarPath(this.getClass());
 		AM_VERSION = FileInspection.getModVersion(THIS_MOD_JAR);
-		MODS_DIR = THIS_MOD_JAR.getParent();
+		MODS_DIR = SmartFileUtils.CWD.resolve("mods");
 	}
 
 	private void loadConfigs() {
@@ -210,10 +190,8 @@ public class Preload {
 			clientConfig = ConfigTools.readOrCreate(clientConfigFile, Jsons.ClientConfigFieldsV3.class, Jsons.ClientConfigFieldsV3::new);
 		}
 
-		ServerConfigMigration.migrateToLatest(serverConfigFile);
-
 		// load server config
-		serverConfig = ConfigTools.readOrCreate(serverConfigFile, Jsons.ServerConfigFieldsV3.class, Jsons.ServerConfigFieldsV3::new);
+		serverConfig = ConfigTools.readOrCreate(serverConfigFile, Jsons.ServerConfigFields.class, Jsons.ServerConfigFields::new);
 
 		if (serverConfig != null) {
 			String serverConfigBefore = ConfigTools.GSON.toJson(serverConfig);

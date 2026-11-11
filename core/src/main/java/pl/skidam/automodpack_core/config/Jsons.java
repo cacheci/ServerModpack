@@ -68,55 +68,19 @@ public class Jsons {
 		}
 	}
 
-	public static class ServerConfigFieldsV1 {
-		public int DO_NOT_CHANGE_IT = 1; // file version
-		public String modpackName = "";
+	public static class ServerConfigFields {
+		public int DO_NOT_CHANGE_IT = 1;
 		public boolean modpackHost = true;
 		public boolean generateModpackOnStart = true;
-		public List<String> syncedFiles = List.of("/mods/*.jar", "/kubejs/**", "!/kubejs/server_scripts/**", "/emotes/*");
-		public List<String> allowEditsInFiles = List.of("/options.txt", "/config/**");
-		public boolean autoExcludeUnnecessaryFiles = true;
-		public boolean requireAutoModpackOnClient = true;
-		public boolean nagUnModdedClients = true;
-		public String nagMessage = "This server provides dedicated modpack through AutoModpack!";
-		public String nagClickableMessage = "Click here to get the AutoModpack!";
-		public String nagClickableLink = "https://modrinth.com/project/automodpack";
-		public boolean autoExcludeServerSideMods = true;
-		public boolean hostModpackOnMinecraftPort = true;
-		public String hostIp = "";
-		public String hostLocalIp = "";
-		public boolean updateIpsOnEveryStart = false;
-		public int hostPort = -1;
-		public boolean reverseProxy = false;
-		public int bandwidthLimit = 0;
-		public long secretLifetime = 336; // 336 hours = 14 days
-		public boolean validateSecrets = true;
-		public boolean selfUpdater = false;
-		public List<String> acceptedLoaders;
-	}
-
-	public static class ServerConfigFieldsV2 {
-		public int DO_NOT_CHANGE_IT = 2; // file version
-		public String modpackName = "";
-		public boolean modpackHost = true;
-		public boolean generateModpackOnStart = true;
-		public Set<String> syncedFiles = Set.of("/mods/*.jar", "/kubejs/**", "!/kubejs/server_scripts/**", "/emotes/*");
-		public Set<String> allowEditsInFiles = Set.of("/options.txt", "/config/**");
-		public Set<String> overwriteEditableFiles = Set.of();
-		public Set<String> forceCopyFilesToStandardLocation = Set.of();
+		public List<String> syncedModFolders = List.of("mods", "mods/client_recommended");
+		@SerializedName("server-only-mods")
+		public Set<String> serverOnlyMods = Set.of();
+		public List<String> syncedConfigs = List.of();
 		public Map<String, String> nonModpackFilesToDelete = Map.of();
-		public boolean autoExcludeServerSideMods = true;
 		public boolean autoExcludeUnnecessaryFiles = true;
-		public boolean requireAutoModpackOnClient = true;
-		public boolean nagUnModdedClients = true;
-		public String nagMessage = "This server provides dedicated modpack through AutoModpack!";
-		public String nagClickableMessage = "Click here to get the AutoModpack!";
-		public String nagClickableLink = "https://modrinth.com/project/automodpack";
 		public String bindAddress = "";
 		public int bindPort = -1;
-		@SerializedName(value = "advertisedEndpointHost", alternate = "addressToSend")
 		public String advertisedEndpointHost = "";
-		@SerializedName(value = "advertisedEndpointPort", alternate = "portToSend")
 		public int advertisedEndpointPort = -1;
 		public boolean disableInternalTLS = false;
 		public ModpackConnectionMode connectionMode = ModpackConnectionMode.defaultFor(Constants.MC_VERSION, Constants.LOADER);
@@ -126,82 +90,6 @@ public class Jsons {
 		public long secretLifetime = 336; // 336 hours = 14 days
 		public boolean selfUpdater = false;
 		public Set<String> acceptedLoaders = new HashSet<>();
-
-		public static class FileToDelete { // Same as in ModpackContentFields.FileToDelete but without timestamp
-			public final String file;
-			public final String sha1;
-
-			public FileToDelete(String file, String sha1) {
-				this.file = file;
-				this.sha1 = sha1;
-			}
-		}
-	}
-
-	public static class ServerConfigFieldsV3 {
-		public int DO_NOT_CHANGE_IT = 3; // file version
-		public String modpackName = "";
-		public boolean modpackHost = true;
-		public boolean generateModpackOnStart = true;
-		// Replaces V2's flat syncedFiles/allowEditsInFiles/overwriteEditableFiles/forceCopyFilesToStandardLocation.
-		// Key is the group id referenced by requires/breaksWith and by the client's saved selection.
-		public Map<String, GroupDeclaration> groups = Map.of("main", mainGroupDeclaration());
-		public Map<String, String> nonModpackFilesToDelete = Map.of();
-		public boolean autoExcludeServerSideMods = true;
-		public boolean autoExcludeUnnecessaryFiles = true;
-		public boolean requireAutoModpackOnClient = true;
-		public boolean nagUnModdedClients = true;
-		public String nagMessage = "This server provides dedicated modpack through AutoModpack!";
-		public String nagClickableMessage = "Click here to get the AutoModpack!";
-		public String nagClickableLink = "https://modrinth.com/project/automodpack";
-		public String bindAddress = "";
-		public int bindPort = -1;
-		@SerializedName(value = "advertisedEndpointHost", alternate = "addressToSend")
-		public String advertisedEndpointHost = "";
-		@SerializedName(value = "advertisedEndpointPort", alternate = "portToSend")
-		public int advertisedEndpointPort = -1;
-		public boolean disableInternalTLS = false;
-		public ModpackConnectionMode connectionMode = ModpackConnectionMode.defaultFor(Constants.MC_VERSION, Constants.LOADER);
-		public boolean updateIpsOnEveryStart = false;
-		public int bandwidthLimit = 0;
-		public boolean validateSecrets = true;
-		public long secretLifetime = 336; // 336 hours = 14 days
-		public boolean selfUpdater = false;
-		public Set<String> acceptedLoaders = new HashSet<>();
-	}
-
-	// Default group for a fresh config and for migrating a V2 config, whose flat file
-	// globs all belong to one implicitly-required group.
-	public static GroupDeclaration mainGroupDeclaration() {
-		GroupDeclaration declaration = new GroupDeclaration();
-		declaration.displayName = "Main";
-		declaration.description = "Core modpack files";
-		declaration.required = true;
-		declaration.recommended = true;
-		declaration.syncedFiles = Set.of("/mods/*.jar", "/kubejs/**", "!/kubejs/server_scripts/**", "/emotes/*");
-		declaration.allowEditsInFiles = Set.of("/options.txt", "/config/**");
-		return declaration;
-	}
-
-	public static class GroupDeclaration {
-		// UI metadata. The map key is the group id; displayName is what the player sees.
-		public String displayName = "";
-		public String description = "";
-		public String category = "";
-
-		// If required, the client cannot uncheck it. recommended is ignored when required.
-		public boolean required = false;
-		public boolean recommended = false;
-
-		// Group ids this one conflicts with / depends on.
-		public Set<String> breaksWith = Set.of();
-		public Set<String> requires = Set.of();
-
-		// Per-group equivalents of the V2 flat file rules.
-		public Set<String> syncedFiles = Set.of();
-		public Set<String> allowEditsInFiles = Set.of();
-		public Set<String> overwriteEditableFiles = Set.of();
-		public Set<String> forceCopyFilesToStandardLocation = Set.of();
 	}
 
 	public static class ServerCoreConfigFields {
@@ -248,9 +136,6 @@ public class Jsons {
 		public String mcVersion = "";
 		public Set<ModpackContentItem> list;
 		public Set<FileToDelete> nonModpackFilesToDelete = Set.of();
-		// Group id -> metadata. Each group's files are referenced by path into `list`, which stays the
-		// canonical flat file set so clients that ignore groups still see a complete modpack.
-		public Map<String, ModpackGroupFields> groups = Map.of();
 
 		public ModpackContentFields(Set<ModpackContentItem> list) {
 			this.list = list;
@@ -258,32 +143,6 @@ public class Jsons {
 
 		public ModpackContentFields() {
 			this.list = Set.of();
-		}
-
-		public static class ModpackGroupFields {
-			// Mirrors Jsons.GroupDeclaration, minus the server-only file globs.
-			public String displayName = "";
-			public String description = "";
-			public String category = "";
-			public boolean required;
-			public boolean recommended;
-			public Set<String> breaksWith = Set.of();
-			public Set<String> requires = Set.of();
-
-			// Populated by the scanner: relative paths of the ModpackContentItems in this group.
-			public Set<String> files = new HashSet<>();
-
-			public ModpackGroupFields() {}
-
-			public ModpackGroupFields(GroupDeclaration declaration) {
-				this.displayName = declaration.displayName;
-				this.description = declaration.description;
-				this.category = declaration.category;
-				this.required = declaration.required;
-				this.recommended = declaration.recommended;
-				this.breaksWith = declaration.breaksWith;
-				this.requires = declaration.requires;
-			}
 		}
 
 		public static class ModpackContentItem {
@@ -295,8 +154,15 @@ public class Jsons {
 			public final boolean forceCopy;
 			public final String sha1;
 			public final String murmur;
+			public final String modId;
+			public final String modVersion;
 
 			public ModpackContentItem(String file, String size, String type, boolean editable, boolean overwriteEditable, boolean forceCopy, String sha1, String murmur) {
+				this(file, size, type, editable, overwriteEditable, forceCopy, sha1, murmur, null, null);
+			}
+
+			public ModpackContentItem(String file, String size, String type, boolean editable, boolean overwriteEditable, boolean forceCopy, String sha1, String murmur,
+					String modId, String modVersion) {
 				this.file = file;
 				this.size = size;
 				this.type = type;
@@ -305,6 +171,8 @@ public class Jsons {
 				this.forceCopy = forceCopy;
 				this.sha1 = sha1;
 				this.murmur = murmur;
+				this.modId = modId;
+				this.modVersion = modVersion;
 			}
 
 			@Override
@@ -369,35 +237,22 @@ public class Jsons {
 		public Set<String> timestamps = ConcurrentHashMap.newKeySet();
 	}
 
-	// Per-modpack record of which groups the player picked, so the selection screen is shown
-	// once and later launches reuse the answer. Keyed by modpack id, matching
-	// ClientConfigFieldsV3.modpackConnections, which already owns the connection details.
+	// Per-modpack record of the player's selected mod IDs and the server mods they last reviewed.
 	public static class ClientSelectionManagerFields {
-		public int DO_NOT_CHANGE_IT = 1; // file version
+		public int DO_NOT_CHANGE_IT = 2; // file version
 		public Map<String, ModpackSelection> selections = new HashMap<>();
 
 		public static class ModpackSelection {
-			public Set<String> selectedGroups = new HashSet<>();
-			// Null means a legacy group-only selection: every mod in each selected group is selected.
-			public Map<String, Set<String>> selectedModsByGroup;
+			public Set<String> selectedModIds = new HashSet<>();
 			// Complete server mod snapshot from the last time the player confirmed this selection.
-			// It is deliberately independent from selectedModsByGroup so new or changed mods cannot be
+			// It is deliberately independent from selectedModIds so new or changed mods cannot be
 			// hidden by the player's previous selection before the confirmation screen is shown.
 			public Map<String, String> knownModFingerprints;
 
 			public ModpackSelection() {}
 
-			public ModpackSelection(Set<String> selectedGroups) {
-				this.selectedGroups = selectedGroups;
-			}
-
-			public ModpackSelection(Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup) {
-				this(selectedGroups, selectedModsByGroup, null);
-			}
-
-			public ModpackSelection(Set<String> selectedGroups, Map<String, Set<String>> selectedModsByGroup, Map<String, String> knownModFingerprints) {
-				this.selectedGroups = selectedGroups;
-				this.selectedModsByGroup = selectedModsByGroup;
+			public ModpackSelection(Set<String> selectedModIds, Map<String, String> knownModFingerprints) {
+				this.selectedModIds = selectedModIds;
 				this.knownModFingerprints = knownModFingerprints;
 			}
 		}

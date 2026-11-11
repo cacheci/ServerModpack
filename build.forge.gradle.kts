@@ -31,6 +31,7 @@ legacyForge {
 dependencies {
 	implementation(project(":core")) { isTransitive = false }
 	implementation(project(":loader-core")) { isTransitive = false }
+	compileOnly(files(rootProject.file("libs/mcholepunch-server-netty-${versionProperty("versionMcholepunch")}.jar")))
 
 	compileOnly(annotationProcessor("io.github.llamalad7:mixinextras-common:$mixinExtrasVersion")!!)
 	implementation(jarJar("io.github.llamalad7:mixinextras-forge:$mixinExtrasVersion")!!)

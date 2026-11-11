@@ -53,7 +53,6 @@ public class AutoModpackTransformationService implements ITransformationService 
 		if (launchTarget != null) EARLY_IS_CLIENT = !launchTarget.toLowerCase(Locale.ROOT).contains("server");
 
 		new Preload();
-		EarlyServiceLayer.bootstrap();
 		EarlyServiceLayer.forwardOnLoad(env, otherServices);
 	}
 

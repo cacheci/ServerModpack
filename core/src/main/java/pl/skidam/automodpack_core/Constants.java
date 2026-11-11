@@ -29,24 +29,17 @@ public class Constants {
 	public static Path MODS_DIR;
 	public static ModpackExecutor modpackExecutor;
 	public static NettyServer hostServer;
-	public static Jsons.ServerConfigFieldsV3 serverConfig;
+	public static Jsons.ServerConfigFields serverConfig;
 	public static Jsons.ClientConfigFieldsV3 clientConfig;
 	public static Jsons.KnownHostsFields knownHosts;
 	public static final Path automodpackDir = Path.of("automodpack");
 	public static final Path storeDir = automodpackDir.resolve("store");
-	public static final Path hostModpackDir = automodpackDir.resolve("host-modpack");
-	// TODO More server modpacks
-	// Main - required
-	// Addons - optional addon packs
-	// Switches - optional or required packs, chosen by the player, only one can be installed at a time
-	public static final Path hostContentModpackDir = hostModpackDir.resolve("main");
-	public static Path hostModpackContentFile = hostModpackDir.resolve("automodpack-content.json");
-	public static Path serverConfigFile = automodpackDir.resolve("automodpack-server.json");
+	public static Path hostModpackContentFile = Path.of("config/automodpack/generated.json");
+	public static Path serverConfigFile = Path.of("config/servermodpack/server.json");
 	public static Path clientLocalMetadataFile = automodpackDir.resolve("automodpack-client-metadata.json");
 	public static Path cacheDir = automodpackDir.resolve("cache");
 	public static Path hashCacheDBFile = cacheDir.resolve("hash-cache.db");
 	public static Path modCacheDBFile = cacheDir.resolve("mod-cache.db");
-	public static Path clientSelectionFile = automodpackDir.resolve("automodpack-client-selection.json");
 	public static Path clientDummyFilesFile = automodpackDir.resolve("automodpack-dummy-files.json");
 	public static Path clientDeletionTimeStamps = automodpackDir.resolve("automodpack-deletion-timestamps-files.json");
 	public static Path serverCoreConfigFile = automodpackDir.resolve("automodpack-core.json");
@@ -61,7 +54,7 @@ public class Constants {
 	public static final Path serverPrivateKeyFile = privateDir.resolve("key.pem");
 
 	// Client
-	public static final Path modpackContentTempFile = automodpackDir.resolve("automodpack-content.json.temp");
+	public static final Path modpackContentTempFile = automodpackDir.resolve("generated.json.temp");
 	public static final Path clientConfigFile = automodpackDir.resolve("automodpack-client.json");
 	public static final Path clientSecretsFile = privateDir.resolve("automodpack-client-secrets.json");
 	public static final Path modpacksDir = automodpackDir.resolve("modpacks");

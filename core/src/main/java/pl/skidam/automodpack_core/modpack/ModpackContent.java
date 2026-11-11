@@ -3,16 +3,15 @@ package pl.skidam.automodpack_core.modpack;
 import static pl.skidam.automodpack_core.Constants.*;
 
 import java.io.IOException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import pl.skidam.automodpack_core.config.ConfigTools;
 import pl.skidam.automodpack_core.config.Jsons;
 import pl.skidam.automodpack_core.loader.LoaderManagerService;
 import pl.skidam.automodpack_core.utils.*;
@@ -21,513 +20,180 @@ import pl.skidam.automodpack_core.utils.cache.FileMetadataCache;
 public class ModpackContent {
 	public final Set<Jsons.ModpackContentFields.ModpackContentItem> list = ConcurrentHashMap.newKeySet();
 	public final ObservableMap<String, Path> pathsMap = new ObservableMap<>();
-	private final String MODPACK_ID;
-	private final String MODPACK_NAME;
-	private final Map<String, GroupScanners> GROUP_SCANNERS = new LinkedHashMap<>();
-	private final Map<String, Jsons.ModpackContentFields.ModpackGroupFields> GROUP_FIELDS = new LinkedHashMap<>();
-	// Each group may own a sibling directory of the modpack dir, e.g. host-modpack/<groupId>/.
-	// Anything inside one belongs to that group outright, no globs needed.
-	private final Map<String, Path> GROUP_DIRECTORIES = new LinkedHashMap<>();
-	private final String FALLBACK_GROUP_ID;
-	private final Path MODPACK_DIR;
-	private final ThreadPoolExecutor CREATION_EXECUTOR;
-	private final Map<String, String> sha1MurmurMapPreviousContent = new HashMap<>();
-	private Optional<Jsons.ModpackContentFields> cachedPreviousContent;
+	private final String modpackId;
 
-	// The four file-rule scanners belonging to one group.
-	private record GroupScanners(FileTreeScanner synced, FileTreeScanner editable, FileTreeScanner overwriteEditable, FileTreeScanner forceCopy) {
-		void scanAll() {
-			synced.scan();
-			editable.scan();
-			overwriteEditable.scan();
-			forceCopy.scan();
-		}
-	}
-
-	/**
-	 * Pre-groups behaviour: every file belongs to a single implicitly-required group.
-	 */
-	public ModpackContent(String modpackName, Path cwd, Path modpackDir, Set<String> syncedFiles, Set<String> allowEditsInFiles,
-			Set<String> overwriteEditableFiles, Set<String> forceCopyFilesToStandardLocation, ThreadPoolExecutor CREATION_EXECUTOR) {
-		this(modpackName, cwd, modpackDir, singleGroup(syncedFiles, allowEditsInFiles, overwriteEditableFiles, forceCopyFilesToStandardLocation),
-				CREATION_EXECUTOR);
-	}
-
-	public ModpackContent(String modpackName, Path cwd, Path modpackDir, Map<String, Jsons.GroupDeclaration> groups,
-			ThreadPoolExecutor CREATION_EXECUTOR) {
-		this.MODPACK_NAME = modpackName;
-		this.MODPACK_DIR = modpackDir;
-		this.cachedPreviousContent = getPreviousContent();
-		this.MODPACK_ID = resolveModpackId(cachedPreviousContent);
-		this.CREATION_EXECUTOR = CREATION_EXECUTOR;
-
-		Set<Path> directoriesToSearch = new HashSet<>(2);
-		if (MODPACK_DIR != null) directoriesToSearch.add(MODPACK_DIR);
-		if (cwd != null) directoriesToSearch.add(cwd);
-		Set<Path> syncedSearchDirectories = cwd != null ? Set.of(cwd) : Set.of();
-
-		Map<String, Jsons.GroupDeclaration> declarations = groups == null || groups.isEmpty()
-				? Map.of("main", Jsons.mainGroupDeclaration())
-				: groups;
-
-		// The modpack dir is itself one group's directory (conventionally "main"), so its siblings
-		// are the other groups' directories.
-		Path modpackRoot = MODPACK_DIR == null ? null : MODPACK_DIR.getParent();
-
-		for (var entry : declarations.entrySet()) {
-			Jsons.GroupDeclaration declaration = entry.getValue();
-			if (declaration == null) continue;
-			Path groupDirectory = modpackRoot == null ? null : modpackRoot.resolve(entry.getKey());
-			if (groupDirectory != null) GROUP_DIRECTORIES.put(entry.getKey(), groupDirectory);
-
-			// hasMatch() only sees files under a scanner's own start directories, so a group's editable
-			// and force-copy rules must also scan its own sibling directory, not just the main modpack
-			// dir and CWD, otherwise files living only there silently lose those flags.
-			Set<Path> ruleSearchDirectories = directoriesToSearch;
-			if (groupDirectory != null && !directoriesToSearch.contains(groupDirectory)) {
-				ruleSearchDirectories = new HashSet<>(directoriesToSearch);
-				ruleSearchDirectories.add(groupDirectory);
-			}
-
-			GROUP_SCANNERS.put(entry.getKey(), new GroupScanners(new FileTreeScanner(declaration.syncedFiles, syncedSearchDirectories),
-					new FileTreeScanner(declaration.allowEditsInFiles, ruleSearchDirectories),
-					new FileTreeScanner(declaration.overwriteEditableFiles, ruleSearchDirectories),
-					new FileTreeScanner(declaration.forceCopyFilesToStandardLocation, ruleSearchDirectories)));
-			GROUP_FIELDS.put(entry.getKey(), new Jsons.ModpackContentFields.ModpackGroupFields(declaration));
-		}
-
-		this.FALLBACK_GROUP_ID = resolveFallbackGroupId(declarations);
-	}
-
-	private static Map<String, Jsons.GroupDeclaration> singleGroup(Set<String> syncedFiles, Set<String> allowEditsInFiles,
-			Set<String> overwriteEditableFiles, Set<String> forceCopyFilesToStandardLocation) {
-		Jsons.GroupDeclaration declaration = new Jsons.GroupDeclaration();
-		declaration.displayName = "Main";
-		declaration.required = true;
-		declaration.recommended = true;
-		declaration.syncedFiles = syncedFiles == null ? Set.of() : syncedFiles;
-		declaration.allowEditsInFiles = allowEditsInFiles == null ? Set.of() : allowEditsInFiles;
-		declaration.overwriteEditableFiles = overwriteEditableFiles == null ? Set.of() : overwriteEditableFiles;
-		declaration.forceCopyFilesToStandardLocation = forceCopyFilesToStandardLocation == null ? Set.of() : forceCopyFilesToStandardLocation;
-		return Map.of("main", declaration);
-	}
-
-	// Files found under the modpack dir that no group's globs claim have to land somewhere; a
-	// required group is the only safe home, otherwise the player could deselect them away.
-	private static String resolveFallbackGroupId(Map<String, Jsons.GroupDeclaration> declarations) {
-		return declarations.entrySet().stream().filter(entry -> entry.getValue() != null && entry.getValue().required).map(Map.Entry::getKey).findFirst()
-				.orElseGet(() -> declarations.keySet().stream().findFirst().orElse("main"));
-	}
-
-	private String resolveModpackId(Optional<Jsons.ModpackContentFields> previousContent) {
-		if (previousContent.isEmpty() || previousContent.get().modpackId == null || previousContent.get().modpackId.isBlank()) return ModpackId.generate();
-		return ModpackId.requireValid(previousContent.get().modpackId);
-	}
-
-	private Optional<Jsons.ModpackContentFields> consumePreviousContent() {
-		if (cachedPreviousContent == null) return getPreviousContent();
-		var previousContent = cachedPreviousContent;
-		cachedPreviousContent = null;
-		return previousContent;
+	public ModpackContent() {
+		Jsons.ModpackContentFields previous = ModpackContentTools.read(hostModpackContentFile);
+		modpackId = previous != null && ModpackId.isValid(previous.modpackId) ? previous.modpackId : ModpackId.generate();
 	}
 
 	public String getModpackId() {
-		return MODPACK_ID;
-	}
-
-	public String getModpackName() {
-		return MODPACK_NAME;
+		return modpackId;
 	}
 
 	public boolean create(FileMetadataCache cache) {
-		Set<Jsons.ModpackContentFields.FileToDelete> computedFilesToDelete = new HashSet<>();
-
 		try {
-			GROUP_SCANNERS.values().forEach(GroupScanners::scanAll);
-
+			Map<String, Path> sources = discoverSources();
+			Jsons.ModpackContentFields previous = ModpackContentTools.read(hostModpackContentFile);
+			Map<String, String> previousMurmurs = new HashMap<>();
+			if (previous != null) previous.list.forEach(item -> previousMurmurs.put(item.sha1, item.murmur));
+			list.clear();
 			pathsMap.clear();
-			sha1MurmurMapPreviousContent.clear();
-			GROUP_FIELDS.values().forEach(group -> group.files = ConcurrentHashMap.newKeySet());
+			Map<String, Path> modIds = new HashMap<>();
 
-			consumePreviousContent().ifPresent(previousContent -> {
-				Map<String, Jsons.ModpackContentFields.FileToDelete> oldFilesMap = previousContent.nonModpackFilesToDelete.stream()
-						.collect(Collectors.toMap(f -> f.file, f -> f, (a, b) -> a));
-
-				if (serverConfig != null && serverConfig.nonModpackFilesToDelete != null) {
-					for (var fileToDeleteEntry : serverConfig.nonModpackFilesToDelete.entrySet()) {
-						var file = fileToDeleteEntry.getKey();
-						var sha1 = fileToDeleteEntry.getValue();
-						if (oldFilesMap.containsKey(file) && oldFilesMap.get(file).sha1.equalsIgnoreCase(sha1)) {
-							computedFilesToDelete.add(oldFilesMap.get(file));
-						} else {
-							String currentTimestamp = String.valueOf(System.currentTimeMillis());
-							computedFilesToDelete.add(new Jsons.ModpackContentFields.FileToDelete(file, sha1, currentTimestamp));
-						}
+			for (var entry : sources.entrySet()) {
+				Path source = entry.getValue();
+				String target = entry.getKey();
+				boolean mod = target.startsWith("/mods/");
+				String fileName = source.getFileName().toString();
+				if (serverConfig.autoExcludeUnnecessaryFiles && (Files.size(source) == 0 || fileName.startsWith(".")
+						|| fileName.endsWith(".tmp") || fileName.endsWith(".disabled") || fileName.endsWith(".bak")))
+					continue;
+				String modId = null;
+				String modVersion = null;
+				if (mod) {
+					if (FileInspection.getModEnvironment(source) == LoaderManagerService.EnvironmentType.SERVER) continue;
+					modId = FileInspection.getModID(source);
+					modVersion = FileInspection.getModVersion(source);
+					if (modId == null || modId.isBlank() || modVersion == null || modVersion.isBlank() || modVersion.contains("${")) {
+						LOGGER.warn("Skipping mod without ID or version: {}", source);
+						continue;
 					}
+					if (serverConfig.serverOnlyMods.contains(modId) || modId.equals(MOD_ID) || modId.equals(MOD_ID + "_bootstrap")
+							|| modId.equals(MOD_ID + "-bootstrap") || modId.equals(MOD_ID + "_mod"))
+						continue;
+					Path previousSource = modIds.putIfAbsent(modId, source);
+					if (previousSource != null && !previousSource.equals(source))
+						throw new IOException("Conflicting mod ID " + modId + ": " + previousSource + " and " + source);
 				}
-
-				previousContent.list.forEach(item -> sha1MurmurMapPreviousContent.put(item.sha1, item.murmur));
-			});
-
-			Map<String, Path> filesToProcess = new HashMap<>();
-
-			for (var groupEntry : GROUP_SCANNERS.entrySet()) {
-				groupEntry.getValue().synced().getMatchedPaths().values()
-						.forEach(path -> filesToProcess.put(SmartFileUtils.formatPath(path, MODPACK_DIR), path));
+				String sha1 = cache == null ? HashUtils.getHash(source) : cache.getHashOrNull(source);
+				if (sha1 == null) continue;
+				String murmur = mod ? previousMurmurs.get(sha1) : null;
+				if (mod && murmur == null) murmur = HashUtils.getCurseforgeMurmurHash(source);
+				var item = new Jsons.ModpackContentFields.ModpackContentItem(target, String.valueOf(Files.size(source)), mod ? "mod" : "config",
+						false, false, false, sha1, murmur, modId, modVersion);
+				list.add(item);
+				pathsMap.put(sha1, source);
 			}
-
-			if (MODPACK_DIR != null) {
-				try (Stream<Path> stream = Files.walk(MODPACK_DIR)) { // in case there any files with the same relative path, we prefer from MODPACK_DIR, this
-																		// will override previous entries
-					stream.forEach(path -> filesToProcess.put(SmartFileUtils.formatPath(path, MODPACK_DIR), path));
-				}
-			}
-
-			// Each group directory is its own modpack root, so host-modpack/<group>/mods/x.jar lands
-			// at /mods/x.jar on the client exactly like the main group's files do.
-			Map<String, String> groupDirectoryFileOwners = new HashMap<>();
-			for (var groupEntry : GROUP_DIRECTORIES.entrySet()) {
-				Path groupDirectory = groupEntry.getValue();
-				if (groupDirectory == null || !Files.isDirectory(groupDirectory)) continue;
-				if (MODPACK_DIR != null && groupDirectory.toAbsolutePath().normalize().equals(MODPACK_DIR.toAbsolutePath().normalize())) continue;
-
-				String owningGroup = groupEntry.getKey();
-				try (Stream<Path> stream = Files.walk(groupDirectory)) {
-					stream.filter(Files::isRegularFile).forEach(path -> {
-						String formattedFile = SmartFileUtils.formatPath(path, groupDirectory);
-						// Two mutually exclusive groups can each ship their own variant of the same
-						// destination path (e.g. /mods/renderer.jar); silently keeping only the last one
-						// found would mean selecting the other group omits the file entirely. That is
-						// a modpack authoring error the server must not start with.
-						String previousOwner = groupDirectoryFileOwners.putIfAbsent(formattedFile, owningGroup);
-						if (previousOwner != null && !previousOwner.equals(owningGroup)) {
-							throw new DuplicateGroupFileError(formattedFile, previousOwner, owningGroup);
-						}
-						filesToProcess.put(formattedFile, path);
-					});
-				} catch (IOException e) {
-					LOGGER.error("Failed to walk group directory {}", groupDirectory, e);
-				}
-			}
-
-			var tempPathMap = new ConcurrentHashMap<>(filesToProcess);
-
-			List<CompletableFuture<GroupedItem>> futures = filesToProcess.entrySet().stream()
-					.map(entry -> CompletableFuture.supplyAsync(() -> {
-						try {
-							String groupId = resolveGroupId(entry.getValue(), entry.getKey());
-							var contentEntry = generateContent(entry.getValue(), entry.getKey(), cache, GROUP_SCANNERS.get(groupId));
-							if (contentEntry == null) return null;
-							LOGGER.debug("Generated modpack content for {} in group {}", entry.getValue(), groupId);
-							tempPathMap.put(contentEntry.sha1, entry.getValue());
-							return new GroupedItem(groupId, contentEntry);
-						} catch (Exception e) {
-							LOGGER.error("Error generating content for {}", entry.getValue(), e);
-							return null;
-						}
-					}, CREATION_EXECUTOR)).toList();
-
-			CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-
-			for (var future : futures) {
-				GroupedItem grouped = future.join();
-				if (grouped != null) {
-					list.add(grouped.item());
-					pathsMap.put(grouped.item().sha1, tempPathMap.get(grouped.item().sha1));
-					var group = GROUP_FIELDS.get(grouped.groupId());
-					if (group != null) group.files.add(grouped.item().file);
-				}
-			}
-
 			if (list.isEmpty()) {
-				LOGGER.warn("Modpack is empty!");
+				LOGGER.warn("Modpack is empty");
 				return false;
-			} else {
-				LOGGER.info("Modpack generated with {} files!", list.size());
 			}
-		} catch (Exception e) {
-			LOGGER.error("Error while generating modpack!", e);
+			saveModpackContent(previous);
+			if (hostServer != null) hostServer.setPaths(pathsMap);
+			return true;
+		} catch (IOException | RuntimeException e) {
+			LOGGER.error("Failed to generate modpack", e);
 			return false;
 		}
-
-		saveModpackContent(computedFilesToDelete);
-		if (hostServer != null) hostServer.setPaths(pathsMap);
-
-		return true;
-	}
-
-	public Optional<Jsons.ModpackContentFields> getPreviousContent() {
-		var optionalModpackContentFile = ModpackContentTools.getModpackContentFile(MODPACK_DIR);
-		return optionalModpackContentFile.map(ModpackContentTools::read);
 	}
 
 	public boolean loadPreviousContent() {
-		var optionalPreviousModpackContent = consumePreviousContent();
-		if (optionalPreviousModpackContent.isEmpty()) return false;
-		Jsons.ModpackContentFields previousModpackContent = optionalPreviousModpackContent.get();
-
-		synchronized (list) {
-			list.addAll(previousModpackContent.list);
-
-			// Reuse the recorded membership; without a rescan we cannot recompute it here.
-			if (previousModpackContent.groups != null) {
-				previousModpackContent.groups.forEach((groupId, previousGroup) -> {
-					var group = GROUP_FIELDS.get(groupId);
-					if (group != null && previousGroup.files != null) group.files.addAll(previousGroup.files);
-				});
-			}
-
-			for (Jsons.ModpackContentFields.ModpackContentItem modpackContentItem : list) {
-				Path file = resolveExistingFile(modpackContentItem.file);
-				if (file == null) {
-					LOGGER.warn("File {} does not exist!", modpackContentItem.file);
-					continue;
-				}
-
-				pathsMap.put(modpackContentItem.sha1, file);
-			}
-		}
-
-		if (hostServer != null) hostServer.setPaths(pathsMap);
-
-		saveModpackContent(previousModpackContent.nonModpackFilesToDelete);
-
-		return true;
-	}
-
-	public synchronized void saveModpackContent(Set<Jsons.ModpackContentFields.FileToDelete> nonModpackFilesToDelete) {
-		if (nonModpackFilesToDelete == null) throw new IllegalArgumentException("filesToDelete is null");
-
-		synchronized (list) {
-			Jsons.ModpackContentFields modpackContent = new Jsons.ModpackContentFields(list);
-
-			modpackContent.automodpackVersion = AM_VERSION;
-			modpackContent.mcVersion = MC_VERSION;
-			modpackContent.loaderVersion = LOADER_VERSION;
-			modpackContent.loader = LOADER;
-			modpackContent.modpackId = MODPACK_ID;
-			modpackContent.modpackName = MODPACK_NAME;
-			modpackContent.nonModpackFilesToDelete = nonModpackFilesToDelete;
-			modpackContent.groups = new LinkedHashMap<>(GROUP_FIELDS);
-
-			try {
-				ModpackContentTools.write(hostModpackContentFile, modpackContent);
-			} catch (IOException e) {
-				throw new ConfigTools.ConfigException("Failed to save modpack content", e);
-			}
-		}
-	}
-
-	public CompletableFuture<Void> replaceAsync(Path file, FileMetadataCache cache) {
-		return CompletableFuture.runAsync(() -> replace(file, cache), CREATION_EXECUTOR);
-	}
-
-	public void replace(Path file, FileMetadataCache cache) {
-		remove(file);
+		Jsons.ModpackContentFields previous = ModpackContentTools.read(hostModpackContentFile);
+		if (previous == null) return false;
 		try {
-			String owningGroup = groupOwningDirectory(file);
-			Path relativeTo = owningGroup != null ? GROUP_DIRECTORIES.get(owningGroup) : MODPACK_DIR;
-			String modpackFile = SmartFileUtils.formatPath(file, relativeTo);
-			String groupId = resolveGroupId(file, modpackFile);
-			Jsons.ModpackContentFields.ModpackContentItem item = generateContent(file, modpackFile, cache, GROUP_SCANNERS.get(groupId));
-			if (item != null) {
-				LOGGER.info("generated content for {}", item.file);
-				synchronized (list) {
-					list.add(item);
+			Map<String, Path> sources = discoverSources();
+			list.clear();
+			pathsMap.clear();
+			for (var item : previous.list) {
+				Path source = sources.get(item.file);
+				if (source == null || !Files.isRegularFile(source)) {
+					LOGGER.error("Manifest source is unavailable: {}", item.file);
+					return false;
 				}
-				pathsMap.put(item.sha1, file);
-				var group = GROUP_FIELDS.get(groupId);
-				if (group != null) group.files.add(item.file);
+				list.add(item);
+				pathsMap.put(item.sha1, source);
 			}
-		} catch (Exception e) {
-			LOGGER.error("Error while replacing content for: " + file, e);
+			if (hostServer != null) hostServer.setPaths(pathsMap);
+			return !list.isEmpty();
+		} catch (IOException e) {
+			LOGGER.error("Failed to load generated modpack", e);
+			return false;
 		}
 	}
 
-	public void remove(Path file) {
-		String owningGroup = groupOwningDirectory(file);
-		String modpackFile = SmartFileUtils.formatPath(file, owningGroup != null ? GROUP_DIRECTORIES.get(owningGroup) : MODPACK_DIR);
+	private void saveModpackContent(Jsons.ModpackContentFields previous) throws IOException {
+		var content = new Jsons.ModpackContentFields(Set.copyOf(list));
+		content.automodpackVersion = AM_VERSION;
+		content.mcVersion = MC_VERSION;
+		content.loaderVersion = LOADER_VERSION;
+		content.loader = LOADER;
+		content.modpackId = modpackId;
+		content.modpackName = "";
+		Map<String, Jsons.ModpackContentFields.FileToDelete> oldDeletions = previous == null
+				? Map.of()
+				: previous.nonModpackFilesToDelete.stream().collect(Collectors.toMap(item -> item.file, item -> item, (a, b) -> a));
+		Set<Jsons.ModpackContentFields.FileToDelete> deletions = new HashSet<>();
+		serverConfig.nonModpackFilesToDelete.forEach((file, sha1) -> {
+			var old = oldDeletions.get(file);
+			deletions.add(old != null && Objects.equals(old.sha1, sha1)
+					? old
+					: new Jsons.ModpackContentFields.FileToDelete(file, sha1, String.valueOf(System.currentTimeMillis())));
+		});
+		content.nonModpackFilesToDelete = deletions;
+		ModpackContentTools.write(hostModpackContentFile, content);
+	}
 
-		synchronized (list) {
-			for (Jsons.ModpackContentFields.ModpackContentItem item : this.list) {
-				if (item.file.equals(modpackFile)) {
-					this.pathsMap.remove(item.sha1);
-					this.list.remove(item);
-					GROUP_FIELDS.values().forEach(group -> group.files.remove(item.file));
-					LOGGER.info("Removed content for {}", modpackFile);
-					break;
+	private Map<String, Path> discoverSources() throws IOException {
+		Map<String, Path> sources = new LinkedHashMap<>();
+		for (String folder : serverConfig.syncedModFolders) {
+			Path directory = resolve(folder);
+			if (!Files.isDirectory(directory)) continue;
+			try (Stream<Path> files = Files.walk(directory)) {
+				for (Path file : files.filter(Files::isRegularFile).filter(path -> path.toString().endsWith(".jar")).toList()) {
+					putSource(sources, "/mods/" + file.getFileName(), file);
 				}
 			}
 		}
-	}
-
-	public static boolean isInnerFile(Path file) {
-		Path normalizedFilePath = file.toAbsolutePath().normalize();
-		boolean isInner = normalizedFilePath.startsWith(automodpackDir.toAbsolutePath().normalize())
-				&& !normalizedFilePath.startsWith(hostModpackDir.toAbsolutePath().normalize());
-		if (!isInner && normalizedFilePath.equals(hostModpackContentFile.toAbsolutePath().normalize())) { // special case, since its inside hostModpackDir
-			return true;
-		}
-
-		return isInner;
-	}
-
-	private record GroupedItem(String groupId, Jsons.ModpackContentFields.ModpackContentItem item) {}
-
-	/**
-	 * Thrown when two mutually exclusive group directories ship a file at the same destination path.
-	 * Deliberately an {@link Error}, not an {@link Exception}: it must escape {@link #create}'s
-	 * {@code catch (Exception e)} and crash the server with this message in the crash report instead
-	 * of silently starting with one of the two files missing from the manifest.
-	 */
-	public static final class DuplicateGroupFileError extends Error {
-		public DuplicateGroupFileError(String formattedFile, String firstGroup, String secondGroup) {
-			super("Modpack file " + formattedFile + " exists in both group '" + firstGroup + "' and group '" + secondGroup
-					+ "'. Each group's files must resolve to a unique destination path; rename or remove one of them.");
-		}
-	}
-
-	/**
-	 * A file sitting inside a group's own directory belongs to that group, no matter what the globs
-	 * say. Otherwise the first group whose synced globs claim the path wins, with declaration order
-	 * deciding ties, and anything left over falls back to a required group.
-	 */
-	private String resolveGroupId(Path absolutePath, String formattedFile) {
-		String owningGroup = groupOwningDirectory(absolutePath);
-		if (owningGroup != null) return owningGroup;
-
-		for (var entry : GROUP_SCANNERS.entrySet()) {
-			if (entry.getValue().synced().matches(formattedFile)) return entry.getKey();
-		}
-		return FALLBACK_GROUP_ID;
-	}
-
-	/**
-	 * Finds a recorded modpack file back on disk. The same relative path can live under the modpack
-	 * dir or under any group's directory, so every root has to be tried before giving up.
-	 */
-	private Path resolveExistingFile(String modpackFile) {
-		if (MODPACK_DIR != null) {
-			Path candidate = SmartFileUtils.getPath(MODPACK_DIR, modpackFile);
-			if (Files.exists(candidate)) return candidate;
-		}
-
-		for (Path groupDirectory : GROUP_DIRECTORIES.values()) {
-			if (groupDirectory == null) continue;
-			Path candidate = SmartFileUtils.getPath(groupDirectory, modpackFile);
-			if (Files.exists(candidate)) return candidate;
-		}
-
-		Path fromCwd = SmartFileUtils.getPathFromCWD(modpackFile);
-		return Files.exists(fromCwd) ? fromCwd : null;
-	}
-
-	private String groupOwningDirectory(Path file) {
-		if (file == null) return null;
-		Path normalized = file.toAbsolutePath().normalize();
-		for (var entry : GROUP_DIRECTORIES.entrySet()) {
-			Path directory = entry.getValue();
-			if (directory == null) continue;
-			if (normalized.startsWith(directory.toAbsolutePath().normalize())) return entry.getKey();
-		}
-		return null;
-	}
-
-	public Map<String, Jsons.ModpackContentFields.ModpackGroupFields> getGroups() {
-		return GROUP_FIELDS;
-	}
-
-	private Jsons.ModpackContentFields.ModpackContentItem generateContent(final Path file, final String formattedFile, FileMetadataCache cache,
-			GroupScanners scanners) throws Exception {
-		if (!Files.isRegularFile(file)) return null;
-
-		if (serverConfig == null) {
-			LOGGER.error("Server config is null!");
-			return null;
-		}
-
-		if (isInnerFile(file)) return null;
-
-		if (formattedFile.startsWith("/automodpack/")) return null;
-
-		final String size = String.valueOf(Files.size(file));
-
-		if (serverConfig.autoExcludeUnnecessaryFiles) {
-			if (size.equals("0")) {
-				LOGGER.info("Skipping file {} because it is empty", formattedFile);
-				return null;
-			}
-
-			if (file.getFileName().toString().startsWith(".")) {
-				LOGGER.info("Skipping file {} is hidden", formattedFile);
-				return null;
-			}
-
-			if (formattedFile.endsWith(".tmp")) {
-				LOGGER.info("File {} is temporary! Skipping...", formattedFile);
-				return null;
-			}
-
-			if (formattedFile.endsWith(".disabled")) {
-				LOGGER.info("File {} is disabled! Skipping...", formattedFile);
-				return null;
-			}
-
-			if (formattedFile.endsWith(".bak")) {
-				LOGGER.info("File {} is backup file, unnecessary on client! Skipping...", formattedFile);
-				return null;
+		for (boolean excluded : new boolean[]{false, true}) {
+			for (String rule : serverConfig.syncedConfigs) {
+				if (rule == null || rule.isBlank() || rule.startsWith("!") != excluded) continue;
+				String raw = excluded ? rule.substring(1) : rule;
+				Path path = resolve(raw);
+				boolean glob = raw.indexOf('*') >= 0 || raw.indexOf('?') >= 0 || raw.indexOf('{') >= 0;
+				Path base = glob ? globBase(path) : Files.isDirectory(path) ? path : path.getParent();
+				if (base == null || !Files.exists(base)) continue;
+				PathMatcher matcher = glob ? FileSystems.getDefault().getPathMatcher("glob:" + path) : null;
+				try (Stream<Path> files = Files.isDirectory(base) ? Files.walk(base) : Stream.of(base)) {
+					for (Path file : files.filter(Files::isRegularFile).toList()) {
+						if (glob && !matcher.matches(file)) continue;
+						if (!glob && Files.isRegularFile(path) && !file.equals(path)) continue;
+						Path source = file.toAbsolutePath().normalize();
+						if (source.equals(hostModpackContentFile.toAbsolutePath().normalize()) || source.equals(serverConfigFile.toAbsolutePath().normalize())) continue;
+						String target = configTarget(file, base);
+						if (excluded) sources.remove(target);
+						else putSource(sources, target, file);
+					}
+				}
 			}
 		}
+		return sources;
+	}
 
-		String type;
+	private static Path resolve(String path) {
+		Path value = Path.of(path);
+		return (value.isAbsolute() ? value : SmartFileUtils.CWD.resolve(value)).toAbsolutePath().normalize();
+	}
 
-		if (FileInspection.isMod(file)) {
-			type = "mod";
-			if (serverConfig.autoExcludeServerSideMods && Objects.equals(FileInspection.getModEnvironment(file), LoaderManagerService.EnvironmentType.SERVER)) {
-				LOGGER.info("File {} is server mod! Skipping...", formattedFile);
-				return null;
-			}
-			// Exclude AutoModpack itself
-			var modId = FileInspection.getModID(file);
-			if ((MOD_ID + "_bootstrap").equals(modId) || (MOD_ID + "-bootstrap").equals(modId) || (MOD_ID + "_mod").equals(modId) || MOD_ID.equals(modId)) {
-				return null;
-			}
-		} else if (formattedFile.contains("/config/")) {
-			type = "config";
-		} else if (formattedFile.contains("/shaderpacks/")) {
-			type = "shader";
-		} else if (formattedFile.contains("/resourcepacks/")) {
-			type = "resourcepack";
-		} else if (formattedFile.endsWith("/options.txt")) {
-			type = "mc_options";
-		} else {
-			type = "other";
+	private static Path globBase(Path path) {
+		Path base = path.getRoot();
+		for (Path part : path) {
+			String name = part.toString();
+			if (name.indexOf('*') >= 0 || name.indexOf('?') >= 0 || name.indexOf('{') >= 0) break;
+			base = base.resolve(part);
 		}
+		return base;
+	}
 
-		String sha1 = cache != null ? cache.getHashOrNull(file) : HashUtils.getHash(file);
+	private static String configTarget(Path file, Path base) {
+		Path cwd = SmartFileUtils.CWD.toAbsolutePath().normalize();
+		Path relative = file.startsWith(cwd) ? cwd.relativize(file) : base.relativize(file);
+		String value = relative.toString().replace('\\', '/');
+		return value.startsWith("config/") ? "/" + value : "/config/" + value;
+	}
 
-		// For CF API
-		String murmur = null;
-		if (type.equals("mod") || type.equals("shader") || type.equals("resourcepack")) {
-			murmur = sha1MurmurMapPreviousContent.get(sha1); // Get from cache
-			if (murmur == null) murmur = HashUtils.getCurseforgeMurmurHash(file);
-		}
-
-		boolean isEditable = false;
-		if (scanners != null && scanners.editable().hasMatch(formattedFile)) {
-			isEditable = true;
-			LOGGER.info("File {} is editable!", formattedFile);
-		}
-
-		boolean overwriteEditable = isEditable && scanners.overwriteEditable().matches(formattedFile);
-		if (overwriteEditable) LOGGER.debug("Editable file {} is overwritten when the server changes it!", formattedFile);
-
-		boolean forcedToCopy = false;
-		if (scanners != null && scanners.forceCopy().hasMatch(formattedFile)) {
-			forcedToCopy = true;
-			LOGGER.info("File {} is forced to copy to standard location!", formattedFile);
-		}
-
-		return new Jsons.ModpackContentFields.ModpackContentItem(formattedFile, size, type, isEditable, overwriteEditable, forcedToCopy, sha1, murmur);
+	private static void putSource(Map<String, Path> sources, String target, Path source) throws IOException {
+		Path previous = sources.putIfAbsent(target, source);
+		if (previous != null && !previous.equals(source)) throw new IOException("Conflicting modpack target " + target + ": " + previous + " and " + source);
 	}
 }

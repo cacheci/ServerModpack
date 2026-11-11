@@ -7,6 +7,7 @@ import pl.skidam.automodpack.client.audio.AudioManager;
 import pl.skidam.automodpack.client.ui.versioned.VersionedMatrices;
 import pl.skidam.automodpack.client.ui.versioned.VersionedScreen;
 import pl.skidam.automodpack.client.ui.versioned.VersionedText;
+import pl.skidam.automodpack_core.modpack.ClientSelectionManager;
 import pl.skidam.automodpack_loader_core.client.ModpackUpdater;
 
 public class DangerScreen extends VersionedScreen {
@@ -36,13 +37,15 @@ public class DangerScreen extends VersionedScreen {
 
 	private void startUpdate() {
 		var content = modpackUpdater.getModpackContent();
-		if (content != null && content.groups != null && !content.groups.isEmpty()) {
+		if (ModpackSelectionScreen.hasSelectableMods(content)) {
 			this.minecraft.gui.setScreen(new ModpackSelectionScreen(this, content, () -> {
 				modpackUpdater.refreshSelection();
 				modpackUpdater.startConfirmedUpdate();
 			}, () -> this.minecraft.gui.setScreen(this)));
 			return;
 		}
+		ClientSelectionManager.getManager().saveSelectionWithoutVisibleMods(content);
+		modpackUpdater.refreshSelection();
 		modpackUpdater.startConfirmedUpdate();
 	}
 

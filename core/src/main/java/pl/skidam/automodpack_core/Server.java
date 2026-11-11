@@ -4,11 +4,9 @@ import static pl.skidam.automodpack_core.Constants.*;
 
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.HashSet;
 
 import pl.skidam.automodpack_core.config.ConfigTools;
 import pl.skidam.automodpack_core.config.Jsons;
-import pl.skidam.automodpack_core.config.ServerConfigMigration;
 import pl.skidam.automodpack_core.modpack.ModpackContent;
 import pl.skidam.automodpack_core.modpack.ModpackExecutor;
 import pl.skidam.automodpack_core.protocol.netty.NettyServer;
@@ -33,18 +31,11 @@ public class Server {
 
 		modpackDir.toFile().mkdirs();
 
-		hostModpackContentFile = modpackDir.resolve("automodpack-content.json");
-		serverConfigFile = modpackDir.resolve("automodpack-server.json");
 		serverCoreConfigFile = modpackDir.resolve("automodpack-core.json");
 
-		ServerConfigMigration.migrateToLatest(serverConfigFile);
-
-		serverConfig = ConfigTools.readOrCreate(serverConfigFile, Jsons.ServerConfigFieldsV3.class, Jsons.ServerConfigFieldsV3::new);
+		serverConfig = ConfigTools.readOrCreate(serverConfigFile, Jsons.ServerConfigFields.class, Jsons.ServerConfigFields::new);
 		if (serverConfig != null) {
-			// Standalone host serves only what is already in the modpack dir, so no group pulls in CWD files.
-			if (serverConfig.groups != null) serverConfig.groups.values().forEach(group -> group.syncedFiles = new HashSet<>());
 			serverConfig.validateSecrets = false;
-			ConfigTools.writeAtomic(serverConfigFile, serverConfig);
 
 			if (serverConfig.bindPort == -1) {
 				LOGGER.error("Host port not set in config!");
@@ -62,12 +53,8 @@ public class Server {
 			ConfigTools.writeAtomic(serverCoreConfigFile, serverCoreConfig);
 		}
 
-		Path mainModpackDir = modpackDir.resolve("main");
-		mainModpackDir.toFile().mkdirs();
-
 		ModpackExecutor modpackExecutor = new ModpackExecutor();
-		ModpackContent modpackContent = new ModpackContent(serverConfig.modpackName, null, mainModpackDir, serverConfig.groups,
-				modpackExecutor.getExecutor());
+		ModpackContent modpackContent = new ModpackContent();
 		boolean generated = modpackExecutor.generateNew(modpackContent);
 
 		if (generated) {
@@ -75,8 +62,6 @@ public class Server {
 		} else {
 			LOGGER.error("Failed to generate modpack!");
 		}
-
-		modpackExecutor.stop();
 
 		LOGGER.info("Starting server on port {}", serverConfig.bindPort);
 		server.start();

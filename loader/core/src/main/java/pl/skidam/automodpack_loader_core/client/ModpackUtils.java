@@ -59,11 +59,17 @@ public class ModpackUtils {
 
 		Set<Jsons.ModpackContentFields.ModpackContentItem> filesToUpdate = new HashSet<>();
 		Set<String> changedOverwriteEditableFiles = findChangedOverwriteEditableFiles(serverModpackContent.list, clientModpackContent);
+		Set<String> installedMods = new HashSet<>();
+		ModpackContentTools.clientMods().forEach(mod -> installedMods.add(mod.modId() + "\0" + mod.version() + "\0" + mod.sha1()));
+		for (var item : serverModpackContent.list) {
+			if ("mod".equals(item.type) && !installedMods.contains(item.modId + "\0" + item.modVersion + "\0" + item.sha1))
+				filesToUpdate.add(item);
+		}
 
 		// Group & Sort Server Files (Optimizes Disk Seek Pattern)
 		// Grouping by parent folder ensures we process the disk sequentially (Dir A, then Dir B).
 		// TreeMap ensures alphabetical order of directories (HDD friendly).
-		Map<Path, List<Jsons.ModpackContentFields.ModpackContentItem>> itemsByDir = serverModpackContent.list.stream()
+		Map<Path, List<Jsons.ModpackContentFields.ModpackContentItem>> itemsByDir = serverModpackContent.list.stream().filter(item -> !"mod".equals(item.type))
 				.collect(Collectors.groupingBy(item -> SmartFileUtils.getPath(modpackDir, item.file).getParent(), TreeMap::new, Collectors.toList()));
 
 		try (var cache = FileMetadataCache.open(hashCacheDBFile)) {
@@ -208,7 +214,8 @@ public class ModpackUtils {
 				continue;
 			}
 
-			Path fileInCWD = SmartFileUtils.getPathFromCWD(entry.file);
+			Path fileInCWD = "mod".equals(entry.type) ? MODS_DIR.resolve(Path.of(entry.file).getFileName())
+					: SmartFileUtils.getPathFromCWD(entry.file);
 			if (SmartFileUtils.isValidFile(fileInCWD, expectedSize, entry.sha1)) {
 				LOGGER.info("Copying existing file from CWD to store: {}", entry.file);
 				try {

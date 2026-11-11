@@ -6,8 +6,6 @@ import java.io.IOException;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileSystem;
-import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
@@ -81,10 +79,6 @@ public class ModpackUpdater implements AutoCloseable {
 
 	public String getModpackId() {
 		return rawServerModpackContent.modpackId;
-	}
-
-	public Map<String, Jsons.ModpackContentFields.ModpackGroupFields> getModpackGroups() {
-		return rawServerModpackContent.groups;
 	}
 
 	public Jsons.ModpackContentFields getModpackContent() {
@@ -208,17 +202,6 @@ public class ModpackUpdater implements AutoCloseable {
 		}
 	}
 
-	// Load the already-installed modpack without contacting the server or
-	// reconciling local files against it. Used when update-on-launch is disabled
-	// so the user can freely add/remove mods (e.g. a binary search) without
-	// AutoModpack restoring or deleting them.
-	public void loadModpack() throws Exception {
-		if (!Files.exists(modpackDir)) return;
-		try (var cache = FileMetadataCache.open(hashCacheDBFile)) {
-			loadModpackMods(cache);
-		}
-	}
-
 	private void checkAndLoadModpack(FileMetadataCache cache) throws Exception {
 		if (!Files.exists(modpackDir)) return;
 
@@ -251,7 +234,6 @@ public class ModpackUpdater implements AutoCloseable {
 		}
 
 		updateLoopDetector.clear();
-		loadModpackMods(cache);
 	}
 
 	private String updateStateFingerprint(ApplyResult applyResult) {
@@ -262,45 +244,6 @@ public class ModpackUpdater implements AutoCloseable {
 		}
 
 		return String.join("\n", modpackDir.toAbsolutePath().normalize().toString(), contentHash, String.join(",", applyResult.reasonIds()));
-	}
-
-	// Load the modpack mods that aren't already present in the standard mods
-	// directory, without requiring a restart.
-	private void loadModpackMods(FileMetadataCache cache) throws Exception {
-		if (!preload) {
-			LOGGER.info("Modpack is already loaded");
-			return;
-		}
-
-		Set<String> standardModsHashes;
-		List<Path> modpackMods = List.of();
-
-		// 1. Collect hashes of existing standard mods into a Set for fast lookup
-		try (Stream<Path> standardModsStream = Files.list(MODS_DIR)) {
-			standardModsHashes = standardModsStream.filter(path -> Files.isRegularFile(path) && path.toString().endsWith(".jar")) // Check extension/type before
-					.map(cache::getHashOrNull) // Safe wrapper for IOException
-					.filter(Objects::nonNull).collect(Collectors.toSet()); // Use Set for O(1) performance
-		} catch (IOException e) {
-			LOGGER.error("Failed to list standard mods directory", e);
-			standardModsHashes = Collections.emptySet();
-		}
-
-		// 2. Filter modpack mods excluding those already present in standard mods
-		Path modpackModsDir = modpackDir.resolve("mods");
-		if (Files.exists(modpackModsDir)) {
-			try (Stream<Path> modpackModsStream = Files.list(modpackModsDir)) {
-				final Set<String> finalStandardModsHashes = standardModsHashes;
-				modpackMods = modpackModsStream.filter(path -> Files.isRegularFile(path) && path.toString().endsWith(".jar")).filter(mod -> {
-					String modHash = cache.getHashOrNull(mod);
-					// Only load if hash is valid AND not found in standard set
-					return modHash != null && !finalStandardModsHashes.contains(modHash);
-				}).toList();
-			} catch (IOException e) {
-				LOGGER.error("Failed to list modpack mods directory", e);
-			}
-		}
-
-		MODPACK_LOADER.loadModpack(modpackMods);
 	}
 
 	public void startUpdate(Set<Jsons.ModpackContentFields.ModpackContentItem> filesToUpdate) {
@@ -506,14 +449,11 @@ public class ModpackUpdater implements AutoCloseable {
 		UpdatePlanner.SelectionContext selection = selectionContext(target.modpackId);
 		Map<UpdatePlan.FileKey, UpdatePlan.FileState> files = inspectFiles(target, installed, selection, cache);
 		populateSelectionObjects(selection, target, files);
-		Set<String> forceCopyServices = getForceCopyMods(target).stream().map(UpdatePlanner::normalize).collect(Collectors.toSet());
-		List<UpdatePlan.ModInfo> targetMods = inspectTargetMods(target, cache);
 		List<UpdatePlan.ModInfo> standardMods = inspectStandardMods(cache);
-		List<UpdatePlan.NestedCopy> nestedCopies = inspectNestedCopies(target, cache);
 		Jsons.ClientConfigFieldsV3 plannedConfig = ModpackUtils.planModpackSelection(target.modpackId, modpackDir, connectionInfo);
 
 		UpdatePlan plan = UpdatePlanner.plan(new UpdatePlanner.Input(installed, target, files, clientConfig.allowRemoteNonModpackDeletions,
-				LegacyClientCacheUtils.getEvaluatedDeletionTimestamps(), forceCopyServices, targetMods, standardMods, nestedCopies, selection, plannedConfig));
+				LegacyClientCacheUtils.getEvaluatedDeletionTimestamps(), Set.of(), List.of(), standardMods, List.of(), selection, plannedConfig));
 		reportPlanWarnings(plan.warnings());
 		if (!LauncherVersionSwapper.requiresLoaderVersionSwap(target.loader, target.loaderVersion)) return plan;
 		Set<UpdatePlan.RestartReason> restartReasons = EnumSet.noneOf(UpdatePlan.RestartReason.class);
@@ -577,7 +517,8 @@ public class ModpackUpdater implements AutoCloseable {
 		Map<UpdatePlan.FileKey, UpdatePlan.FileState> files = new HashMap<>();
 		if (Files.isDirectory(modpackDir)) {
 			try (Stream<Path> stream = Files.walk(modpackDir)) {
-				for (Path path : stream.filter(Files::isRegularFile).filter(path -> !path.equals(modpackContentFile)).toList())
+				for (Path path : stream.filter(Files::isRegularFile).filter(path -> !path.equals(modpackContentFile))
+						.filter(path -> !path.startsWith(modpackDir.resolve("mods"))).toList())
 					putFileState(files, UpdatePlan.Root.MODPACK_DIR, modpackDir, path, cache);
 			}
 		}
@@ -617,57 +558,18 @@ public class ModpackUpdater implements AutoCloseable {
 		files.put(new UpdatePlan.FileKey(root, relative), new UpdatePlan.FileState(cache.getHashOrNull(path), Files.size(path), true, FileInspection.isMod(path)));
 	}
 
-	private List<UpdatePlan.ModInfo> inspectTargetMods(Jsons.ModpackContentFields target, FileMetadataCache cache) {
-		List<UpdatePlan.ModInfo> mods = new ArrayList<>();
-		for (var item : target.list.stream().filter(value -> "mod".equals(value.type)).sorted(Comparator.comparing(value -> value.file)).toList()) {
-			Path source = storeDir.resolve(item.sha1);
-			if (!SmartFileUtils.isValidFile(source, Long.parseLong(item.size), item.sha1)) source = SmartFileUtils.getPath(modpackDir, item.file);
-			FileInspection.Mod mod = FileInspection.getMod(source, cache);
-			if (mod != null) mods.add(new UpdatePlan.ModInfo(UpdatePlanner.normalize(item.file), item.sha1, Long.parseLong(item.size), mod.IDs(), mod.deps()));
-		}
-		return mods;
-	}
-
 	private List<UpdatePlan.ModInfo> inspectStandardMods(FileMetadataCache cache) throws IOException {
 		if (!Files.isDirectory(MODS_DIR)) return List.of();
 		List<UpdatePlan.ModInfo> mods = new ArrayList<>();
 		try (Stream<Path> stream = Files.list(MODS_DIR)) {
 			for (Path path : stream.filter(Files::isRegularFile).sorted().toList()) {
 				FileInspection.Mod mod = FileInspection.getMod(path, cache);
-				if (mod != null) mods.add(new UpdatePlan.ModInfo(path.getFileName().toString(), mod.hash(), Files.size(path), mod.IDs(), mod.deps()));
+				String modId = FileInspection.getModID(path);
+				if (mod != null && modId != null)
+					mods.add(new UpdatePlan.ModInfo(path.getFileName().toString(), mod.hash(), Files.size(path), Set.of(modId), mod.deps()));
 			}
 		}
 		return mods;
-	}
-
-	private List<UpdatePlan.NestedCopy> inspectNestedCopies(Jsons.ModpackContentFields target, FileMetadataCache cache) throws IOException {
-		Files.createDirectories(cacheDir);
-		Path inspectionDirectory = Files.createTempDirectory(cacheDir, "update-inspection-");
-		try {
-			Path inspectionMods = inspectionDirectory.resolve("mods");
-			Files.createDirectories(inspectionMods);
-			for (var item : target.list.stream().filter(value -> "mod".equals(value.type)).toList()) {
-				Path source = storeDir.resolve(item.sha1);
-				if (!SmartFileUtils.isValidFile(source, Long.parseLong(item.size), item.sha1)) source = SmartFileUtils.getPath(modpackDir, item.file);
-				if (!SmartFileUtils.isValidFile(source, Long.parseLong(item.size), item.sha1)) continue;
-				SmartFileUtils.copyVerifiedAtomic(source, inspectionMods.resolve(Path.of(UpdatePlanner.normalize(item.file)).getFileName()), Long.parseLong(item.size),
-						item.sha1);
-			}
-
-			List<UpdatePlan.NestedCopy> copies = new ArrayList<>();
-			for (FileInspection.Mod mod : MODPACK_LOADER.getModpackNestedConflicts(inspectionDirectory, cache)) {
-				if (mod.path() == null || mod.hash() == null || !Files.isRegularFile(mod.path())) continue;
-				long size = Files.size(mod.path());
-				Path storeFile = storeDir.resolve(mod.hash());
-				if (!SmartFileUtils.isValidFile(storeFile, size, mod.hash())) SmartFileUtils.copyVerifiedAtomic(mod.path(), storeFile, size, mod.hash());
-				copies.add(new UpdatePlan.NestedCopy(mod.path().getFileName().toString(), mod.hash(), size, mod.IDs()));
-			}
-			return copies;
-		} finally {
-			try (Stream<Path> stream = Files.walk(inspectionDirectory)) {
-				for (Path path : stream.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
-			}
-		}
 	}
 
 	private void executePlan(UpdatePlan plan, Jsons.ModpackContentFields targetManifest) throws IOException {
@@ -683,6 +585,7 @@ public class ModpackUpdater implements AutoCloseable {
 
 	private void populateStoreFromModpack(Collection<Jsons.ModpackContentFields.ModpackContentItem> items, FileMetadataCache cache) {
 		for (var item : items) {
+			if ("mod".equals(item.type)) continue;
 			Path storeFile = storeDir.resolve(item.sha1);
 			long size = Long.parseLong(item.size);
 			if (SmartFileUtils.isValidFile(storeFile, size, item.sha1)) continue;
@@ -706,11 +609,10 @@ public class ModpackUpdater implements AutoCloseable {
 			if (SmartFileUtils.isValidFile(storeFile, operation.expectedSize(), operation.expectedObjectHash())) continue;
 			var item = itemsByHash.get(operation.expectedObjectHash().toLowerCase(Locale.ROOT));
 			if (item == null) throw new IOException("Planned CAS object is unavailable: " + operation.expectedObjectHash());
-			Path source = SmartFileUtils.getPath(modpackDir, item.file);
+			Path source = "mod".equals(item.type) ? MODS_DIR.resolve(Path.of(UpdatePlanner.normalize(item.file)).getFileName())
+					: SmartFileUtils.getPath(modpackDir, item.file);
 			if (!SmartFileUtils.isValidFile(source, operation.expectedSize(), operation.expectedObjectHash()))
-				source = "mod".equals(item.type)
-						? MODS_DIR.resolve(Path.of(UpdatePlanner.normalize(item.file)).getFileName())
-						: SmartFileUtils.getPathFromCWD(item.file);
+				source = SmartFileUtils.getPathFromCWD(item.file);
 			if (!SmartFileUtils.isValidFile(source, operation.expectedSize(), operation.expectedObjectHash()))
 				throw new IOException("Required object is absent from CAS and verified live locations: " + operation.expectedObjectHash());
 			SmartFileUtils.copyVerifiedAtomic(source, storeFile, operation.expectedSize(), operation.expectedObjectHash());
@@ -776,24 +678,4 @@ public class ModpackUpdater implements AutoCloseable {
 		}
 	}
 
-	// Returns the modpack mods that ship a service file this loader's running version cannot host
-	// in place (see ModpackLoaderService#forceCopyServices) - these must be copied into standard
-	// mods/ instead of staying in the modpack folder.
-	private Set<String> getForceCopyMods(Jsons.ModpackContentFields modpackContentFields) throws IOException {
-		Set<String> forceCopyServices = MODPACK_LOADER.forceCopyServices();
-		Set<String> forceCopyMods = new HashSet<>();
-		if (forceCopyServices.isEmpty()) return forceCopyMods;
-
-		for (Jsons.ModpackContentFields.ModpackContentItem item : modpackContentFields.list) {
-			if (!item.type.equals("mod")) continue;
-
-			Path modPath = storeDir.resolve(item.sha1);
-			if (!SmartFileUtils.isValidFile(modPath, Long.parseLong(item.size), item.sha1)) modPath = SmartFileUtils.getPath(modpackDir, item.file);
-			try (FileSystem fs = FileSystems.newFileSystem(modPath)) {
-				if (!FileInspection.getServices(fs, forceCopyServices).isEmpty()) forceCopyMods.add(item.file);
-			}
-		}
-
-		return forceCopyMods;
-	}
 }
